@@ -514,6 +514,22 @@ impl StsApp {
 
 impl eframe::App for StsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // 设置窗口标题
+        let title = if let Some(path) = &self.current_file_path {
+            if let Some(ts) = &self.timesheet {
+                if self.is_modified {
+                    format!("{} - {}*", ts.name, path)
+                } else {
+                    format!("{} - {}", ts.name, path)
+                }
+            } else {
+                "STS 3.0".to_string()
+            }
+        } else {
+            "STS 3.0".to_string()
+        };
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+
         // 强制浅色
         ctx.set_visuals(egui::Visuals::light());
 
