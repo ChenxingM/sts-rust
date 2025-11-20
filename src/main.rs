@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 use eframe::egui;
 use sts_rust::TimeSheet;
 use sts_rust::models::timesheet::CellValue;
