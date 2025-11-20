@@ -18,7 +18,14 @@ fn main() -> Result<(), eframe::Error> {
 }
 
 const DASH: &str = "-";
-const EMPTY: &str = "";
+
+// 单元格渲染颜色常量
+const BG_EDITING: egui::Color32 = egui::Color32::from_rgb(255, 255, 200);
+const BG_SELECTED: egui::Color32 = egui::Color32::from_rgb(200, 220, 255);
+const BG_IN_SELECTION: egui::Color32 = egui::Color32::from_rgb(220, 235, 255);
+const BG_NORMAL: egui::Color32 = egui::Color32::WHITE;
+const BORDER_SELECTION: egui::Color32 = egui::Color32::from_rgb(100, 150, 255);
+const BORDER_NORMAL: egui::Color32 = egui::Color32::GRAY;
 
 // 撤销操作类型
 #[derive(Clone)]
@@ -43,8 +50,8 @@ struct StsApp {
     new_framerate: u32,
     new_layer_count: usize,
     new_frames_per_page: u32,
-    new_seconds: u32,        // 新增：秒数
-    new_frames: u32,         // 新增：帧数
+    new_seconds: u32,
+    new_frames: u32,
     selected_cell: Option<(usize, usize)>,
     editing_cell: Option<(usize, usize)>,
     editing_text: String,
@@ -184,7 +191,7 @@ impl StsApp {
     }
 
     /// 检查单元格是否在选区内
-    #[inline]
+    #[inline(always)]
     fn is_cell_in_selection(&self, layer: usize, frame: usize) -> bool {
         if let (Some((start_layer, start_frame)), Some((end_layer, end_frame))) =
             (self.selection_start, self.selection_end) {
@@ -216,6 +223,7 @@ impl StsApp {
     }
 
     /// 复制选区到系统剪贴板
+    #[inline]
     fn copy_selection(&mut self, ctx: &egui::Context) {
         // 先清空剪贴板
         self.clipboard.clear();
@@ -286,6 +294,53 @@ impl StsApp {
                         ts.set_cell(layer, frame, None);
                     }
                 }
+            }
+        }
+    }
+
+    /// 删除选区内容（不复制到剪贴板）
+    fn delete_selection(&mut self) {
+        // 清空选区内容并记录撤销
+        if let Some((min_layer, min_frame, max_layer, max_frame)) = self.get_selection_range() {
+            if let Some(ts) = &mut self.timesheet {
+                // 保存旧值
+                let mut old_values = Vec::new();
+                for layer in min_layer..=max_layer {
+                    let mut old_row = Vec::new();
+                    for frame in min_frame..=max_frame {
+                        old_row.push(ts.get_cell(layer, frame).copied());
+                    }
+                    old_values.push(old_row);
+                }
+
+                // 记录撤销
+                self.undo_stack.push(UndoAction::SetRange {
+                    min_layer,
+                    min_frame,
+                    old_values,
+                });
+
+                // 清空
+                for layer in min_layer..=max_layer {
+                    for frame in min_frame..=max_frame {
+                        ts.set_cell(layer, frame, None);
+                    }
+                }
+            }
+        } else if let Some((layer, frame)) = self.selected_cell {
+            // 如果没有选区，删除当前选中的单元格
+            let old_value = if let Some(ts) = &self.timesheet {
+                ts.get_cell(layer, frame).copied()
+            } else {
+                None
+            };
+
+            // 记录撤销
+            self.push_undo_set_cell(layer, frame, old_value, None);
+
+            // 清空单元格
+            if let Some(ts) = &mut self.timesheet {
+                ts.set_cell(layer, frame, None);
             }
         }
     }
@@ -381,6 +436,7 @@ impl eframe::App for StsApp {
         let mut should_cut = false;
         let mut should_paste = false;
         let mut should_undo = false;
+        let mut should_delete = false;
 
         // 检测快捷键 - 检查事件队列
         ctx.input(|i| {
@@ -414,6 +470,11 @@ impl eframe::App for StsApp {
             // Ctrl+Z 撤销
             if i.modifiers.ctrl && i.key_pressed(egui::Key::Z) && !i.modifiers.shift {
                 should_undo = true;
+            }
+
+            // Delete键删除选区
+            if i.key_pressed(egui::Key::Delete) {
+                should_delete = true;
             }
         });
 
@@ -465,8 +526,14 @@ impl eframe::App for StsApp {
                 self.context_menu_pos = None; // 关闭菜单
             }
 
-            // 只在非编辑模式下处理 CVX
+            // 只在非编辑模式下处理 CVX 和 Delete
             let is_editing = self.editing_cell.is_some() || self.editing_layer_name.is_some();
+
+            // 执行删除操作
+            if !is_editing && should_delete {
+                self.delete_selection();
+                self.context_menu_pos = None; // 关闭菜单
+            }
 
             // 执行剪贴板操作
             if !is_editing && (should_copy || should_cut || should_paste) {
@@ -657,10 +724,7 @@ impl eframe::App for StsApp {
                 let page_col_width = 36.0;
 
                 // 表头
-                let (layer_count, layer_names) = {
-                    let ts = self.timesheet.as_ref().unwrap();
-                    (ts.layer_count, ts.layer_names.clone())
-                };
+                let layer_count = self.timesheet.as_ref().unwrap().layer_count;
 
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
@@ -714,17 +778,18 @@ impl eframe::App for StsApp {
                             // 显示模式 - 居中显示
                             let resp = ui.interact(rect, id, egui::Sense::click());
 
+                            let layer_name = &self.timesheet.as_ref().unwrap().layer_names[i];
                             ui.painter().text(
                                 rect.center(),
                                 egui::Align2::CENTER_CENTER,
-                                &layer_names[i],
+                                layer_name,
                                 egui::FontId::proportional(11.0),
                                 egui::Color32::BLACK,
                             );
 
                             if resp.clicked() {
                                 self.editing_layer_name = Some(i);
-                                self.editing_layer_text = layer_names[i].clone();
+                                self.editing_layer_text = layer_name.clone();
                             }
                         }
                     }
@@ -735,7 +800,7 @@ impl eframe::App for StsApp {
                 // 数据区域
                 let total_frames = {
                     let ts_mut = self.timesheet.as_mut().unwrap();
-                    let total = ts_mut.total_frames().max(1); // 至少1帧，不强制扩展到100
+                    let total = ts_mut.total_frames().max(1);
                     ts_mut.ensure_frames(total);
                     total
                 };
@@ -788,13 +853,6 @@ impl eframe::App for StsApp {
                                 }
 
                                 // 单元格
-                                const BG_EDITING: egui::Color32 = egui::Color32::from_rgb(255, 255, 200);
-                                const BG_SELECTED: egui::Color32 = egui::Color32::from_rgb(200, 220, 255);
-                                const BG_IN_SELECTION: egui::Color32 = egui::Color32::from_rgb(220, 235, 255);
-                                const BG_NORMAL: egui::Color32 = egui::Color32::WHITE;
-                                const BORDER_SELECTION: egui::Color32 = egui::Color32::from_rgb(100, 150, 255);
-                                const BORDER_NORMAL: egui::Color32 = egui::Color32::GRAY;
-
                                 for layer_idx in 0..layer_count {
                                     let is_selected = self.selected_cell == Some((layer_idx, frame_idx));
                                     let is_editing = self.editing_cell == Some((layer_idx, frame_idx));

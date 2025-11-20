@@ -71,6 +71,7 @@ impl TimeSheet {
     }
 
     /// 生成列名
+    #[inline]
     pub fn column_name(index: usize) -> String {
         let mut result = String::new();
         let mut n = index;
@@ -87,7 +88,7 @@ impl TimeSheet {
     }
 
     /// 获取单元格值
-    #[inline]
+    #[inline(always)]
     pub fn get_cell(&self, layer: usize, frame: usize) -> Option<&CellValue> {
         self.cells.get(layer)?.get(frame)?.as_ref()
     }
@@ -105,6 +106,7 @@ impl TimeSheet {
     }
 
     /// 获取单元格的实际值
+    #[inline]
     pub fn get_actual_value(&self, layer: usize, frame: usize) -> Option<u32> {
         let cell = self.get_cell(layer, frame)?;
         
@@ -123,7 +125,7 @@ impl TimeSheet {
     }
 
     /// 获取页号和页内帧号 (1-indexed)
-    #[inline]
+    #[inline(always)]
     pub fn get_page_and_frame(&self, frame_index: usize) -> (u32, u32) {
         let frame_num = frame_index as u32 + 1; // 1-indexed
         let page = (frame_num - 1) / self.frames_per_page + 1;

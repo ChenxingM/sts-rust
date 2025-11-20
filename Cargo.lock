@@ -2274,6 +2274,7 @@ dependencies = [
  "eframe",
  "egui",
  "encoding_rs",
+ "image",
  "itoa",
  "pretty_assertions",
  "rfd",

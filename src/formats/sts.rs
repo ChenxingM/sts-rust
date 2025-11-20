@@ -29,16 +29,16 @@ pub fn parse_sts_file(path: &str) -> Result<TimeSheet> {
     }
 
     let header_str = std::str::from_utf8(&buffer[1..18])
-        .context("无效的文件头字符串")?;
+        .context("Invalid STS file: invalid header")?;
     if header_str != "ShiraheiTimeSheet" {
-        bail!("不是ShiraheiTimeSheet格式");
+        bail!("Invalid STS file: invalid header");
     }
 
     let layer_count = buffer[18] as usize;
     let frame_count = u16::from_le_bytes([buffer[19], buffer[20]]) as usize;
 
     if layer_count == 0 || frame_count == 0 {
-        bail!("层数或帧数为0");
+        bail!("Invalid STS file: invalid layer count or frame count: {} layers, {} frames", layer_count, frame_count);
     }
 
     // 计算帧数据区大小
@@ -46,7 +46,7 @@ pub fn parse_sts_file(path: &str) -> Result<TimeSheet> {
     let frame_data_end = 23 + frame_data_size;
 
     if buffer.len() < frame_data_end {
-        bail!("文件过小，帧数据不完整");
+        bail!("Invalid STS file: incomplete frame data");
     }
 
     // 解析帧数据
@@ -122,15 +122,15 @@ pub fn write_sts_file(timesheet: &TimeSheet, path: &str) -> Result<()> {
     let frame_count = timesheet.total_frames();
 
     if layer_count > 255 {
-        bail!("层数过多: {}, 最大支持 255 层", layer_count);
+        bail!("Too many layers: {}, maximum is 255", layer_count);
     }
 
     if frame_count > 65535 {
-        bail!("帧数过多: {}, 最大支持 65535 帧", frame_count);
+        bail!("Too many frames: {}, maximum is 65535", frame_count);
     }
 
     let mut file = File::create(path)
-        .with_context(|| format!("无法创建文件: {}", path))?;
+        .with_context(|| format!("Unable to create: {}", path))?;
 
     // === 文件头 (23 bytes) ===
 
@@ -168,11 +168,11 @@ pub fn write_sts_file(timesheet: &TimeSheet, path: &str) -> Result<()> {
         let (name_bytes, _, had_errors) = SHIFT_JIS.encode(name);
 
         if had_errors {
-            eprintln!("警告: 层名称 '{}' 包含无法编码为Shift-JIS的字符", name);
+            eprintln!("Warning: Layer name '{}' contains character that cannot encode to Shift-JIS", name);
         }
 
         let name_bytes = if name_bytes.len() > 255 {
-            eprintln!("警告: 层名称过长，截断为255字节: '{}'", name);
+            eprintln!("Warning: Layer name over 255 characters will be truncated: '{}'", name);
             &name_bytes[..255]
         } else {
             &name_bytes
