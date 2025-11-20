@@ -45,9 +45,19 @@ enum UndoAction {
     },
 }
 
+#[derive(Clone, Copy)]
+enum PendingAction {
+    New,
+    Open,
+}
+
 struct StsApp {
     timesheet: Option<TimeSheet>,
+    current_file_path: Option<String>,        // 当前文件路径
+    is_modified: bool,                        // 文件是否被修改
     show_new_dialog: bool,
+    show_confirm_dialog: bool,
+    pending_action: Option<PendingAction>,
     new_name: String,
     new_framerate: u32,
     new_layer_count: usize,
@@ -79,7 +89,11 @@ impl Default for StsApp {
     fn default() -> Self {
         Self {
             timesheet: None,
+            current_file_path: None,
+            is_modified: false,
             show_new_dialog: true,
+            show_confirm_dialog: false,
+            pending_action: None,
             new_name: "sheet1".to_string(),
             new_framerate: 24,
             new_layer_count: 12,
@@ -106,6 +120,71 @@ impl Default for StsApp {
 }
 
 impl StsApp {
+    /// 打开文件
+    fn open_file(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("STS Files", &["sts"])
+            .pick_file()
+        {
+            let path_str = path.to_str().unwrap();
+            match sts_rust::parse_sts_file(path_str) {
+                Ok(ts) => {
+                    self.timesheet = Some(ts);
+                    self.current_file_path = Some(path_str.to_string());
+                    self.is_modified = false;
+                    self.selected_cell = Some((0, 0));
+                    self.error_message = None;
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Failed to open: {}", e));
+                }
+            }
+        }
+    }
+
+    /// 保存文件
+    fn save_file(&mut self) {
+        if let Some(ts) = &self.timesheet {
+            // 如果已经有文件路径，直接保存
+            if let Some(path) = &self.current_file_path {
+                match sts_rust::write_sts_file(ts, path) {
+                    Ok(_) => {
+                        self.error_message = None;
+                        self.is_modified = false;
+                    }
+                    Err(e) => {
+                        self.error_message = Some(format!("Failed to save: {}", e));
+                    }
+                }
+            } else {
+                // 没有路径，弹出对话框
+                self.save_file_as();
+            }
+        }
+    }
+
+    /// 另存为
+    fn save_file_as(&mut self) {
+        if let Some(ts) = &self.timesheet {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("STS Files", &["sts"])
+                .save_file()
+            {
+                let path_str = path.to_str().unwrap();
+                match sts_rust::write_sts_file(ts, path_str) {
+                    Ok(_) => {
+                        self.current_file_path = Some(path_str.to_string());
+                        self.is_modified = false;
+                        self.error_message = None;
+                    }
+                    Err(e) => {
+                        self.error_message = Some(format!("Failed to save: {}", e));
+                    }
+                }
+            }
+        }
+    }
+
     /// 创建新摄影表
     #[inline]
     fn create_new_timesheet(&mut self) {
@@ -120,6 +199,8 @@ impl StsApp {
         );
         ts.ensure_frames(total_frames.max(1)); // 至少 1 帧
         self.timesheet = Some(ts);
+        self.current_file_path = None;  // 新建时清除文件路径
+        self.is_modified = false;       // 新建时清除修改标志
         self.show_new_dialog = false;
         self.selected_cell = Some((0, 0));
     }
