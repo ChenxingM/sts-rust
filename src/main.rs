@@ -671,6 +671,24 @@ impl eframe::App for StsApp {
 
         // 新建对话框
         if self.show_new_dialog {
+            // 绘制半透明的背景覆盖层（浅灰色）
+            egui::Area::new(egui::Id::new("modal_dimmer"))
+                .fixed_pos(egui::pos2(0.0, 0.0))
+                .show(ctx, |ui| {
+                    let screen_rect = ctx.screen_rect();
+                    let bg_color = ui.visuals().window_fill();
+                    ui.painter().rect_filled(
+                        screen_rect,
+                        0.0,
+                        egui::Color32::from_rgba_premultiplied(
+                            bg_color.r(),
+                            bg_color.g(),
+                            bg_color.b(),
+                            200, // 半透明
+                        ),
+                    );
+                });
+
             egui::Window::new("New")
                 .collapsible(false)
                 .resizable(false)
