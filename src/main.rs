@@ -20,6 +20,22 @@ fn main() -> Result<(), eframe::Error> {
 const DASH: &str = "-";
 const EMPTY: &str = "";
 
+// 撤销操作类型
+#[derive(Clone)]
+enum UndoAction {
+    SetCell {
+        layer: usize,
+        frame: usize,
+        old_value: Option<CellValue>,
+        new_value: Option<CellValue>,
+    },
+    SetRange {
+        min_layer: usize,
+        min_frame: usize,
+        old_values: Vec<Vec<Option<CellValue>>>,
+    },
+}
+
 struct StsApp {
     timesheet: Option<TimeSheet>,
     show_new_dialog: bool,
@@ -27,7 +43,8 @@ struct StsApp {
     new_framerate: u32,
     new_layer_count: usize,
     new_frames_per_page: u32,
-    new_total_frames: usize,
+    new_seconds: u32,        // 新增：秒数
+    new_frames: u32,         // 新增：帧数
     selected_cell: Option<(usize, usize)>,
     editing_cell: Option<(usize, usize)>,
     editing_text: String,
@@ -41,6 +58,12 @@ struct StsApp {
     is_dragging: bool,                         // 是否正在拖拽选择
     // 剪贴板
     clipboard: Vec<Vec<Option<CellValue>>>,   // 剪贴板数据 [layer][frame]
+    // 撤销栈
+    undo_stack: Vec<UndoAction>,              // 撤销历史
+    // 右键菜单
+    context_menu_pos: Option<(usize, usize)>, // 右键点击位置 (layer, frame)
+    context_menu_screen_pos: egui::Pos2,      // 菜单屏幕位置
+    context_menu_selection: Option<((usize, usize), (usize, usize))>, // 右键时的选区状态
 }
 
 impl Default for StsApp {
@@ -52,7 +75,8 @@ impl Default for StsApp {
             new_framerate: 24,
             new_layer_count: 12,
             new_frames_per_page: 144,
-            new_total_frames: 100,
+            new_seconds: 6,           // 默认 6 秒
+            new_frames: 0,            // 默认 0 帧
             selected_cell: None,
             editing_cell: None,
             editing_text: String::new(),
@@ -64,6 +88,10 @@ impl Default for StsApp {
             selection_end: None,
             is_dragging: false,
             clipboard: Vec::new(),
+            undo_stack: Vec::new(),
+            context_menu_pos: None,
+            context_menu_screen_pos: egui::Pos2::ZERO,
+            context_menu_selection: None,
         }
     }
 }
@@ -72,13 +100,16 @@ impl StsApp {
     /// 创建新摄影表
     #[inline]
     fn create_new_timesheet(&mut self) {
+        // 计算总帧数 = 秒 * fps + 帧
+        let total_frames = (self.new_seconds * self.new_framerate + self.new_frames) as usize;
+
         let mut ts = TimeSheet::new(
             self.new_name.clone(),
             self.new_framerate,
             self.new_layer_count,
             self.new_frames_per_page,
         );
-        ts.ensure_frames(self.new_total_frames);
+        ts.ensure_frames(total_frames.max(1)); // 至少 1 帧
         self.timesheet = Some(ts);
         self.show_new_dialog = false;
         self.selected_cell = Some((0, 0));
@@ -107,11 +138,14 @@ impl StsApp {
         }
     }
 
-    /// 完成编辑
+    /// 完成编辑 - record_undo 控制是否记录撤销
     #[inline]
-    fn finish_edit(&mut self, move_down: bool) {
+    fn finish_edit(&mut self, move_down: bool, record_undo: bool) {
         if let Some((layer, frame)) = self.editing_cell {
-            if let Some(ts) = &mut self.timesheet {
+            // 先获取旧值和新值
+            let (old_value, new_value) = if let Some(ts) = &self.timesheet {
+                let old_value = ts.get_cell(layer, frame).copied();
+
                 let value = if self.editing_text.trim().is_empty() {
                     // 空输入 → 复制上一格的值
                     if frame > 0 {
@@ -125,11 +159,23 @@ impl StsApp {
                     None
                 };
 
-                ts.set_cell(layer, frame, value);
+                (old_value, value)
+            } else {
+                (None, None)
+            };
 
-                if move_down {
-                    self.selected_cell = Some((layer, frame + 1));
-                }
+            // 只在值改变且需要记录时记录撤销
+            if record_undo && old_value != new_value {
+                self.push_undo_set_cell(layer, frame, old_value, new_value);
+            }
+
+            // 设置新值
+            if let Some(ts) = &mut self.timesheet {
+                ts.set_cell(layer, frame, new_value);
+            }
+
+            if move_down {
+                self.selected_cell = Some((layer, frame + 1));
             }
 
             self.editing_cell = None;
@@ -169,28 +215,72 @@ impl StsApp {
         }
     }
 
-    /// 复制选区到剪贴板
-    fn copy_selection(&mut self) {
-        if let Some((min_layer, min_frame, max_layer, max_frame)) = self.get_selection_range() {
+    /// 复制选区到系统剪贴板
+    fn copy_selection(&mut self, ctx: &egui::Context) {
+        // 先清空剪贴板
+        self.clipboard.clear();
+
+        // 获取选区范围
+        let range = self.get_selection_range();
+
+        if let Some((min_layer, min_frame, max_layer, max_frame)) = range {
             if let Some(ts) = &self.timesheet {
-                self.clipboard.clear();
+                let mut text_rows = Vec::new();
+
                 for layer in min_layer..=max_layer {
                     let mut row = Vec::new();
+                    let mut text_cols = Vec::new();
+
                     for frame in min_frame..=max_frame {
-                        row.push(ts.get_cell(layer, frame).copied());
+                        let cell = ts.get_cell(layer, frame).copied();
+                        row.push(cell);
+
+                        // 转换为文本
+                        let text = match cell {
+                            Some(CellValue::Number(n)) => n.to_string(),
+                            Some(CellValue::Same) => "-".to_string(),
+                            None => "".to_string(),
+                        };
+                        text_cols.push(text);
                     }
                     self.clipboard.push(row);
+                    text_rows.push(text_cols.join("\t"));
+                }
+
+                // 复制到系统剪贴板（TSV格式）
+                if !self.clipboard.is_empty() {
+                    let clipboard_text = text_rows.join("\n");
+                    ctx.output_mut(|o| o.copied_text = clipboard_text);
                 }
             }
         }
     }
 
     /// 剪切选区到剪贴板
-    fn cut_selection(&mut self) {
-        self.copy_selection();
-        // 清空选区内容
+    fn cut_selection(&mut self, ctx: &egui::Context) {
+        self.copy_selection(ctx);
+
+        // 清空选区内容并记录撤销
         if let Some((min_layer, min_frame, max_layer, max_frame)) = self.get_selection_range() {
             if let Some(ts) = &mut self.timesheet {
+                // 保存旧值
+                let mut old_values = Vec::new();
+                for layer in min_layer..=max_layer {
+                    let mut old_row = Vec::new();
+                    for frame in min_frame..=max_frame {
+                        old_row.push(ts.get_cell(layer, frame).copied());
+                    }
+                    old_values.push(old_row);
+                }
+
+                // 记录撤销
+                self.undo_stack.push(UndoAction::SetRange {
+                    min_layer,
+                    min_frame,
+                    old_values,
+                });
+
+                // 清空
                 for layer in min_layer..=max_layer {
                     for frame in min_frame..=max_frame {
                         ts.set_cell(layer, frame, None);
@@ -200,23 +290,81 @@ impl StsApp {
         }
     }
 
-    /// 从当前选中单元格粘贴
+    /// 从系统剪贴板粘贴
     fn paste_clipboard(&mut self) {
-        if self.clipboard.is_empty() {
-            return;
-        }
-
         if let Some((start_layer, start_frame)) = self.selected_cell {
             if let Some(ts) = &mut self.timesheet {
-                for (layer_offset, row) in self.clipboard.iter().enumerate() {
-                    let target_layer = start_layer + layer_offset;
-                    for (frame_offset, cell) in row.iter().enumerate() {
-                        let target_frame = start_frame + frame_offset;
-                        ts.set_cell(target_layer, target_frame, cell.clone());
+                // 使用内部剪贴板
+                if !self.clipboard.is_empty() {
+                    // 保存旧值用于撤销
+                    let mut old_values = Vec::new();
+                    for (layer_offset, row) in self.clipboard.iter().enumerate() {
+                        let target_layer = start_layer + layer_offset;
+                        let mut old_row = Vec::new();
+                        for (frame_offset, _) in row.iter().enumerate() {
+                            let target_frame = start_frame + frame_offset;
+                            old_row.push(ts.get_cell(target_layer, target_frame).copied());
+                        }
+                        old_values.push(old_row);
+                    }
+
+                    // 记录撤销操作
+                    self.undo_stack.push(UndoAction::SetRange {
+                        min_layer: start_layer,
+                        min_frame: start_frame,
+                        old_values,
+                    });
+
+                    // 粘贴新值
+                    for (layer_offset, row) in self.clipboard.iter().enumerate() {
+                        let target_layer = start_layer + layer_offset;
+                        for (frame_offset, cell) in row.iter().enumerate() {
+                            let target_frame = start_frame + frame_offset;
+                            ts.set_cell(target_layer, target_frame, *cell);
+                        }
                     }
                 }
             }
         }
+    }
+
+    /// 撤销操作
+    fn undo(&mut self) {
+        if let Some(action) = self.undo_stack.pop() {
+            if let Some(ts) = &mut self.timesheet {
+                match action {
+                    UndoAction::SetCell { layer, frame, old_value, .. } => {
+                        ts.set_cell(layer, frame, old_value);
+                    }
+                    UndoAction::SetRange { min_layer, min_frame, old_values } => {
+                        for (layer_offset, row) in old_values.iter().enumerate() {
+                            for (frame_offset, value) in row.iter().enumerate() {
+                                ts.set_cell(
+                                    min_layer + layer_offset,
+                                    min_frame + frame_offset,
+                                    *value,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// 记录单元格修改到撤销栈
+    #[inline]
+    fn push_undo_set_cell(&mut self, layer: usize, frame: usize, old_value: Option<CellValue>, new_value: Option<CellValue>) {
+        // 限制撤销栈大小
+        if self.undo_stack.len() > 100 {
+            self.undo_stack.remove(0);
+        }
+        self.undo_stack.push(UndoAction::SetCell {
+            layer,
+            frame,
+            old_value,
+            new_value,
+        });
     }
 }
 
@@ -226,56 +374,120 @@ impl eframe::App for StsApp {
         ctx.set_visuals(egui::Visuals::light());
 
         // 快捷键
-        if self.timesheet.is_some() {
-            let mut should_copy = false;
-            let mut should_cut = false;
-            let mut should_paste = false;
+        let mut should_new = false;
+        let mut should_open = false;
+        let mut should_save = false;
+        let mut should_copy = false;
+        let mut should_cut = false;
+        let mut should_paste = false;
+        let mut should_undo = false;
 
-            // 剪贴板事件检测
-            ctx.input(|i| {
-                for event in &i.events {
-                    match event {
-                        egui::Event::Copy => {
-                            should_copy = true;
-                        }
-                        egui::Event::Cut => {
-                            should_cut = true;
-                        }
-                        egui::Event::Paste(_) => {
-                            should_paste = true;
-                        }
-                        _ => {}
+        // 检测快捷键 - 检查事件队列
+        ctx.input(|i| {
+            // 文件操作快捷键
+            if i.modifiers.ctrl && i.key_pressed(egui::Key::N) {
+                should_new = true;
+            }
+            if i.modifiers.ctrl && i.key_pressed(egui::Key::O) {
+                should_open = true;
+            }
+            if i.modifiers.ctrl && i.key_pressed(egui::Key::S) {
+                should_save = true;
+            }
+
+            // 剪贴板快捷键
+            for event in &i.events {
+                match event {
+                    egui::Event::Copy => {
+                        should_copy = true;
+                    }
+                    egui::Event::Cut => {
+                        should_cut = true;
+                    }
+                    egui::Event::Paste(_) => {
+                        should_paste = true;
+                    }
+                    _ => {}
+                }
+            }
+
+            // Ctrl+Z 撤销
+            if i.modifiers.ctrl && i.key_pressed(egui::Key::Z) && !i.modifiers.shift {
+                should_undo = true;
+            }
+        });
+
+        // 处理文件操作快捷键
+        if should_new {
+            self.show_new_dialog = true;
+        }
+
+        if should_open {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("STS Files", &["sts"])
+                .pick_file()
+            {
+                match sts_rust::parse_sts_file(path.to_str().unwrap()) {
+                    Ok(ts) => {
+                        self.timesheet = Some(ts);
+                        self.selected_cell = Some((0, 0));
+                        self.error_message = None;
+                    }
+                    Err(e) => {
+                        self.error_message = Some(format!("Failed to open: {}", e));
                     }
                 }
-            });
+            }
+        }
 
-            // 执行操作
-            if should_copy || should_cut || should_paste {
+        if should_save {
+            if let Some(ts) = &self.timesheet {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("STS Files", &["sts"])
+                    .save_file()
+                {
+                    match sts_rust::write_sts_file(ts, path.to_str().unwrap()) {
+                        Ok(_) => self.error_message = None,
+                        Err(e) => {
+                            self.error_message = Some(format!("Failed to save: {}", e));
+                        }
+                    }
+                }
+            }
+        }
 
-                // 退出编辑
-                if self.editing_cell.is_some() {
-                    self.editing_cell = None;
-                    self.editing_text.clear();
-                }
-                if self.editing_layer_name.is_some() {
-                    self.editing_layer_name = None;
-                }
+        // 处理剪贴板和撤销快捷键
+        if self.timesheet.is_some() {
+
+            // 执行撤销
+            if should_undo {
+                self.undo();
+                self.context_menu_pos = None; // 关闭菜单
+            }
+
+            // 只在非编辑模式下处理 CVX
+            let is_editing = self.editing_cell.is_some() || self.editing_layer_name.is_some();
+
+            // 执行剪贴板操作
+            if !is_editing && (should_copy || should_cut || should_paste) {
+                // 关闭右键菜单
+                self.context_menu_pos = None;
 
                 if should_copy {
                     if self.selection_start.is_some() && self.selection_end.is_some() {
-                        self.copy_selection();
+                        self.copy_selection(ctx);
                     } else if let Some((layer, frame)) = self.selected_cell {
                         self.selection_start = Some((layer, frame));
                         self.selection_end = Some((layer, frame));
-                        self.copy_selection();
+                        self.copy_selection(ctx);
                     }
                 } else if should_cut {
                     if self.selection_start.is_some() && self.selection_end.is_some() {
-                        self.cut_selection();
+                        self.cut_selection(ctx);
                     } else if let Some((layer, frame)) = self.selected_cell {
                         self.selection_start = Some((layer, frame));
                         self.selection_end = Some((layer, frame));
-                        self.cut_selection();
+                        self.cut_selection(ctx);
                         self.selection_start = None;
                         self.selection_end = None;
                     }
@@ -309,10 +521,37 @@ impl eframe::App for StsApp {
                         ui.label("Frames/Page:");
                         ui.add(egui::DragValue::new(&mut self.new_frames_per_page).range(12..=288));
                     });
+
+                    ui.separator();
+
+                    // 秒 + 帧输入
                     ui.horizontal(|ui| {
-                        ui.label("Total Frames:");
-                        ui.add(egui::DragValue::new(&mut self.new_total_frames).range(1..=10000));
+                        ui.label("Duration:");
+                        ui.add(egui::DragValue::new(&mut self.new_seconds).range(0..=3600).suffix("s"));
+                        ui.label("+");
+                        ui.add(egui::DragValue::new(&mut self.new_frames).range(0..=self.new_framerate - 1).suffix("k"));
                     });
+
+                    // 显示计算结果
+                    let total_frames = self.new_seconds * self.new_framerate + self.new_frames;
+                    let total_pages = if total_frames == 0 {
+                        0
+                    } else {
+                        (total_frames + self.new_frames_per_page - 1) / self.new_frames_per_page
+                    };
+
+                    ui.horizontal(|ui| {
+                        ui.label("→ Total Frames:");
+                        let mut buf1 = itoa::Buffer::new();
+                        ui.label(buf1.format(total_frames));
+                        ui.separator();
+                        ui.label("Pages:");
+                        let mut buf2 = itoa::Buffer::new();
+                        ui.label(buf2.format(total_pages));
+                    });
+
+                    ui.separator();
+
                     if ui.button("OK").clicked() {
                         self.create_new_timesheet();
                     }
@@ -324,14 +563,14 @@ impl eframe::App for StsApp {
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
-                    if ui.button("New").clicked() {
+                    if ui.button("New (Ctrl+N)").clicked() {
                         self.show_new_dialog = true;
                         ui.close_menu();
                     }
 
-                    if ui.button("Open...").clicked() {
+                    if ui.button("Open... (Ctrl+O)").clicked() {
                         if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("STS Files", &["sts", "json"])
+                            .add_filter("STS Files", &["sts"])
                             .pick_file()
                         {
                             match sts_rust::parse_sts_file(path.to_str().unwrap()) {
@@ -348,10 +587,10 @@ impl eframe::App for StsApp {
                         ui.close_menu();
                     }
 
-                    if ui.button("Save...").clicked() {
+                    if ui.button("Save... (Ctrl+S)").clicked() {
                         if let Some(ts) = &self.timesheet {
                             if let Some(path) = rfd::FileDialog::new()
-                                .add_filter("STS Files", &["sts", "json"])
+                                .add_filter("STS Files", &["sts"])
                                 .save_file()
                             {
                                 match sts_rust::write_sts_file(ts, path.to_str().unwrap()) {
@@ -399,23 +638,23 @@ impl eframe::App for StsApp {
                 ui.horizontal(|ui| {
                     let ts = self.timesheet.as_ref().unwrap();
                     ui.label(&ts.name);
-                    ui.label(format!("FPS: {}", ts.framerate));
 
                     ui.separator();
 
+                    // Total Frames
                     ui.label("Total Frames:");
-                    let mut temp_frames = ts.total_frames();
-                    if ui.add(egui::DragValue::new(&mut temp_frames).range(1..=10000)).changed() {
-                        self.timesheet.as_mut().unwrap().ensure_frames(temp_frames);
-                    }
+                    let mut frames_buf = itoa::Buffer::new();
+                    ui.label(frames_buf.format(ts.total_frames()));
+
+                    ui.separator();
                 });
 
                 ui.separator();
 
                 // 表格
                 let row_height = 16.0;
-                let col_width = 32.0;
-                let page_col_width = 32.0;
+                let col_width = 36.0;
+                let page_col_width = 36.0;
 
                 // 表头
                 let (layer_count, layer_names) = {
@@ -496,12 +735,12 @@ impl eframe::App for StsApp {
                 // 数据区域
                 let total_frames = {
                     let ts_mut = self.timesheet.as_mut().unwrap();
-                    let total = ts_mut.total_frames().max(100);
+                    let total = ts_mut.total_frames().max(1); // 至少1帧，不强制扩展到100
                     ts_mut.ensure_frames(total);
                     total
                 };
 
-                ui.spacing_mut().item_spacing.y = -0.1;
+                ui.spacing_mut().item_spacing.y = 0.0;
 
                 let mut page_buf = itoa::Buffer::new();
                 let mut frame_buf = itoa::Buffer::new();
@@ -599,7 +838,7 @@ impl eframe::App for StsApp {
                                         text_response.request_focus();
 
                                         if text_response.lost_focus() && !ui.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Escape)) {
-                                            self.finish_edit(false);
+                                            self.finish_edit(false, true);
                                         }
                                     } else {
                                         let ts_ref = self.timesheet.as_ref().unwrap();
@@ -629,18 +868,42 @@ impl eframe::App for StsApp {
                                     }
 
                                     // 鼠标交互
-                                    // 检测鼠标按下
-                                    if cell_response.is_pointer_button_down_on() {
-                                        if !self.is_dragging {
-                                            // 初始化拖拽
-                                            self.is_dragging = true;
-                                            self.selection_start = Some((layer_idx, frame_idx));
-                                            self.selection_end = Some((layer_idx, frame_idx));
+                                    if cell_response.secondary_clicked() {
+                                        // 右键菜单
+                                        self.context_menu_pos = Some((layer_idx, frame_idx));
+
+                                        // 保存当前选区状态
+                                        if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
+                                            self.context_menu_selection = Some((start, end));
+                                        } else {
+                                            self.context_menu_selection = None;
+                                        }
+
+                                        // 右键时不清除选区
+                                        if !self.is_cell_in_selection(layer_idx, frame_idx) {
                                             self.selected_cell = Some((layer_idx, frame_idx));
-                                            // 退出编辑模式
-                                            if self.editing_cell.is_some() {
-                                                self.editing_cell = None;
-                                                self.editing_text.clear();
+                                        }
+
+                                        // 保存右键点击时的屏幕位置
+                                        if let Some(pos) = cell_response.interact_pointer_pos() {
+                                            self.context_menu_screen_pos = pos;
+                                        }
+                                    } else {
+                                        // 左键拖拽选择
+                                        if let Some(pos) = pointer_pos {
+                                            if pointer_down && cell_rect.contains(pos) {
+                                                if !self.is_dragging {
+                                                    // 初始化拖拽
+                                                    self.is_dragging = true;
+                                                    self.selection_start = Some((layer_idx, frame_idx));
+                                                    self.selection_end = Some((layer_idx, frame_idx));
+                                                    self.selected_cell = Some((layer_idx, frame_idx));
+                                                    // 退出编辑模式
+                                                    if self.editing_cell.is_some() {
+                                                        self.editing_cell = None;
+                                                        self.editing_text.clear();
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -669,6 +932,143 @@ impl eframe::App for StsApp {
                 }
             });
 
+            // 右键菜单
+            if let Some((_menu_layer, _menu_frame)) = self.context_menu_pos {
+                // 固定在右键点击的位置
+                let menu_result = egui::Area::new(egui::Id::new("context_menu"))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(self.context_menu_screen_pos)
+                    .show(ctx, |ui| {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            ui.set_min_width(120.0);
+
+                            let copy = ui.button("Copy (Ctrl+C)").clicked();
+                            let cut = ui.button("Cut (Ctrl+X)").clicked();
+                            let paste = ui.button("Paste (Ctrl+V)").clicked();
+
+                            ui.separator();
+
+                            let undo = ui.button("Undo (Ctrl+Z)").clicked();
+
+                            (copy, cut, paste, undo)
+                        }).inner
+                    });
+
+                let (copy_clicked, cut_clicked, paste_clicked, undo_clicked) = menu_result.inner;
+                let menu_response = menu_result.response;
+
+                // 处理按钮点击
+                let any_button_clicked = copy_clicked || cut_clicked || paste_clicked || undo_clicked;
+
+                if copy_clicked {
+                    // 使用右键时保存的选区状态
+                    if let Some((start, end)) = self.context_menu_selection {
+                        // 有选区，复制选区
+                        self.clipboard.clear();
+                        if let Some(ts) = &self.timesheet {
+                            let min_layer = start.0.min(end.0);
+                            let max_layer = start.0.max(end.0);
+                            let min_frame = start.1.min(end.1);
+                            let max_frame = start.1.max(end.1);
+
+                            let mut text_rows = Vec::new();
+                            for layer in min_layer..=max_layer {
+                                let mut row = Vec::new();
+                                let mut text_cols = Vec::new();
+
+                                for frame in min_frame..=max_frame {
+                                    let cell = ts.get_cell(layer, frame).copied();
+                                    row.push(cell);
+
+                                    let text = match cell {
+                                        Some(CellValue::Number(n)) => n.to_string(),
+                                        Some(CellValue::Same) => "-".to_string(),
+                                        None => "".to_string(),
+                                    };
+                                    text_cols.push(text);
+                                }
+                                self.clipboard.push(row);
+                                text_rows.push(text_cols.join("\t"));
+                            }
+
+                            // 复制到系统剪贴板
+                            let clipboard_text = text_rows.join("\n");
+                            ctx.output_mut(|o| o.copied_text = clipboard_text);
+                        }
+                    } else {
+                        // 没有选区，从右键位置复制单个单元格
+                        if let Some((layer, frame)) = self.context_menu_pos {
+                            self.clipboard.clear();
+                            if let Some(ts) = &self.timesheet {
+                                let cell = ts.get_cell(layer, frame).copied();
+                                self.clipboard.push(vec![cell]);
+
+                                // 复制到系统剪贴板
+                                let text = match cell {
+                                    Some(CellValue::Number(n)) => n.to_string(),
+                                    Some(CellValue::Same) => "-".to_string(),
+                                    None => "".to_string(),
+                                };
+                                ctx.output_mut(|o| o.copied_text = text);
+                            }
+                        }
+                    }
+                    self.context_menu_pos = None;
+                } else if cut_clicked {
+                    // 使用右键时保存的选区状态
+                    if let Some((start, end)) = self.context_menu_selection {
+                        // 临时设置选区用于剪切
+                        self.selection_start = Some(start);
+                        self.selection_end = Some(end);
+                        self.cut_selection(ctx);
+                        self.selection_start = None;
+                        self.selection_end = None;
+                    } else if let Some((layer, frame)) = self.context_menu_pos {
+                        // 没有选区，剪切单个单元格
+                        self.selection_start = Some((layer, frame));
+                        self.selection_end = Some((layer, frame));
+                        self.cut_selection(ctx);
+                        self.selection_start = None;
+                        self.selection_end = None;
+                    }
+                    self.context_menu_pos = None;
+                } else if paste_clicked {
+                    // 粘贴到右键点击的位置
+                    if let Some((layer, frame)) = self.context_menu_pos {
+                        self.selected_cell = Some((layer, frame));
+                    }
+                    self.paste_clipboard();
+                    self.context_menu_pos = None;
+                } else if undo_clicked {
+                    self.undo();
+                    self.context_menu_pos = None;
+                }
+
+                // 只在没有按钮被点击时才检查菜单外部点击
+                if !any_button_clicked {
+                    let clicked_outside = ctx.input(|i| {
+                        if i.pointer.primary_clicked() {
+                            if let Some(pos) = i.pointer.interact_pos() {
+                                !menu_response.rect.contains(pos)
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    });
+
+                    if clicked_outside {
+                        self.context_menu_pos = None;
+                    }
+                }
+
+                // ESC 键关闭菜单
+                if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    self.context_menu_pos = None;
+                }
+            }
+
             let layer_count = self.timesheet.as_ref().unwrap().layer_count;
 
             if let Some((layer, frame)) = self.editing_cell {
@@ -677,7 +1077,7 @@ impl eframe::App for StsApp {
 
                 ctx.input(|i| {
                     if i.key_pressed(egui::Key::Enter) {
-                        self.finish_edit(true);
+                        self.finish_edit(true, true);
                         self.auto_scroll_to_selection = true;
                     } else if i.key_pressed(egui::Key::Escape) {
                         self.editing_cell = None;
@@ -697,7 +1097,10 @@ impl eframe::App for StsApp {
 
                         if let Some(pos) = new_pos {
                             if has_input {
-                                self.editing_cell = Some(pos);
+                                // 保存当前单元格并记录撤销
+                                self.finish_edit(false, true);
+                                // 移动到新单元格并开始编辑
+                                self.start_edit(pos.0, pos.1);
                             } else {
                                 self.editing_cell = None;
                                 self.editing_text.clear();
@@ -707,20 +1110,30 @@ impl eframe::App for StsApp {
                         }
                     }
                 });
-
-                if has_input && self.editing_cell.is_some() && self.editing_cell != Some((layer, frame)) {
-                    self.editing_text = current_text;
-                }
             } else if let Some((layer, frame)) = self.selected_cell {
                 ctx.input(|i| {
                     if i.key_pressed(egui::Key::Enter) {
-                        if let Some(ts) = &mut self.timesheet {
+                        // 先收集信息
+                        let (old_value, new_value) = if let Some(ts) = &self.timesheet {
                             if frame > 0 {
-                                if let Some(prev_val) = ts.get_cell(layer, frame - 1).copied() {
-                                    ts.set_cell(layer, frame, Some(prev_val));
-                                }
+                                let old = ts.get_cell(layer, frame).copied();
+                                let new = ts.get_cell(layer, frame - 1).copied();
+                                (old, new)
+                            } else {
+                                (None, None)
+                            }
+                        } else {
+                            (None, None)
+                        };
+
+                        // 记录撤销并设置值
+                        if old_value != new_value && new_value.is_some() {
+                            self.push_undo_set_cell(layer, frame, old_value, new_value);
+                            if let Some(ts) = &mut self.timesheet {
+                                ts.set_cell(layer, frame, new_value);
                             }
                         }
+
                         self.selected_cell = Some((layer, frame + 1));
                         self.auto_scroll_to_selection = true;
                     } else if i.key_pressed(egui::Key::Tab) && layer < layer_count - 1 {

@@ -52,10 +52,10 @@ impl TimeSheet {
         let layer_names = (0..layer_count)
             .map(|i| Self::column_name(i))
             .collect();
-        /// TODO 这里要用输入的 秒+帧 转换为 (秒*fps+帧)为总帧数 总帧数/每页帧数得到页数（余数进一）
-        let total_frames = (frames_per_page * 10) as usize;
-        let cells = vec![vec![None; total_frames]; layer_count];
-        
+
+        // 初始创建空表格，通过 ensure_frames 设置实际帧数
+        let cells = vec![vec![]; layer_count];
+
         Self {
             name,
             framerate,
