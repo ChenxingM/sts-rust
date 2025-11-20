@@ -1363,5 +1363,69 @@ impl eframe::App for StsApp {
                 });
             });
         }
+
+        // 确认保存对话框 - 放在最后渲染，确保叠在其他UI之上
+        if self.show_confirm_dialog {
+            let mut should_close = false;
+            let mut action_choice: Option<bool> = None;
+
+            egui::Window::new("Save Changes?")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("Do you want to save before continuing?");
+                    ui.add_space(10.0);
+
+                    ui.horizontal(|ui| {
+                        if ui.add_sized([80.0, 25.0], egui::Button::new("Save")).clicked() {
+                            action_choice = Some(true);
+                            should_close = true;
+                        }
+
+                        if ui.add_sized(
+                            [90.0, 25.0],
+                            egui::Button::new(
+                                egui::RichText::new("Don't Save").color(egui::Color32::RED)
+                            )
+                        ).clicked() {
+                            action_choice = Some(false);
+                            should_close = true;
+                        }
+
+                        if ui.add_sized([80.0, 25.0], egui::Button::new("Cancel")).clicked() {
+                            should_close = true;
+                        }
+                    });
+                });
+
+            if should_close {
+                self.show_confirm_dialog = false;
+                match action_choice {
+                    Some(true) => {
+                        self.save_file();
+                        if let Some(action) = self.pending_action {
+                            match action {
+                                PendingAction::New => self.show_new_dialog = true,
+                                PendingAction::Open => self.open_file(),
+                            }
+                        }
+                        self.pending_action = None;
+                    }
+                    Some(false) => {
+                        if let Some(action) = self.pending_action {
+                            match action {
+                                PendingAction::New => self.show_new_dialog = true,
+                                PendingAction::Open => self.open_file(),
+                            }
+                        }
+                        self.pending_action = None;
+                    }
+                    None => {
+                        self.pending_action = None;
+                    }
+                }
+            }
+        }
     }
 }
