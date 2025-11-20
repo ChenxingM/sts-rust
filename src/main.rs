@@ -585,41 +585,27 @@ impl eframe::App for StsApp {
 
         // 处理文件操作快捷键
         if should_new {
-            self.show_new_dialog = true;
+            // 如果当前有表格，询问是否保存
+            if self.timesheet.is_some() {
+                self.show_confirm_dialog = true;
+                self.pending_action = Some(PendingAction::New);
+            } else {
+                self.show_new_dialog = true;
+            }
         }
 
         if should_open {
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter("STS Files", &["sts"])
-                .pick_file()
-            {
-                match sts_rust::parse_sts_file(path.to_str().unwrap()) {
-                    Ok(ts) => {
-                        self.timesheet = Some(ts);
-                        self.selected_cell = Some((0, 0));
-                        self.error_message = None;
-                    }
-                    Err(e) => {
-                        self.error_message = Some(format!("Failed to open: {}", e));
-                    }
-                }
+            // 如果当前有表格，询问是否保存
+            if self.timesheet.is_some() {
+                self.show_confirm_dialog = true;
+                self.pending_action = Some(PendingAction::Open);
+            } else {
+                self.open_file();
             }
         }
 
         if should_save {
-            if let Some(ts) = &self.timesheet {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("STS Files", &["sts"])
-                    .save_file()
-                {
-                    match sts_rust::write_sts_file(ts, path.to_str().unwrap()) {
-                        Ok(_) => self.error_message = None,
-                        Err(e) => {
-                            self.error_message = Some(format!("Failed to save: {}", e));
-                        }
-                    }
-                }
-            }
+            self.save_file();
         }
 
         // 处理剪贴板和撤销快捷键
@@ -754,43 +740,34 @@ impl eframe::App for StsApp {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("New (Ctrl+N)").clicked() {
-                        self.show_new_dialog = true;
+                        // 如果当前有表格，询问是否保存
+                        if self.timesheet.is_some() {
+                            self.show_confirm_dialog = true;
+                            self.pending_action = Some(PendingAction::New);
+                        } else {
+                            self.show_new_dialog = true;
+                        }
                         ui.close_menu();
                     }
 
                     if ui.button("Open... (Ctrl+O)").clicked() {
-                        if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("STS Files", &["sts"])
-                            .pick_file()
-                        {
-                            match sts_rust::parse_sts_file(path.to_str().unwrap()) {
-                                Ok(ts) => {
-                                    self.timesheet = Some(ts);
-                                    self.selected_cell = Some((0, 0));
-                                    self.error_message = None;
-                                }
-                                Err(e) => {
-                                    self.error_message = Some(format!("Failed to open: {}", e));
-                                }
-                            }
+                        // 如果当前有表格，询问是否保存
+                        if self.timesheet.is_some() {
+                            self.show_confirm_dialog = true;
+                            self.pending_action = Some(PendingAction::Open);
+                        } else {
+                            self.open_file();
                         }
                         ui.close_menu();
                     }
 
-                    if ui.button("Save... (Ctrl+S)").clicked() {
-                        if let Some(ts) = &self.timesheet {
-                            if let Some(path) = rfd::FileDialog::new()
-                                .add_filter("STS Files", &["sts"])
-                                .save_file()
-                            {
-                                match sts_rust::write_sts_file(ts, path.to_str().unwrap()) {
-                                    Ok(_) => self.error_message = None,
-                                    Err(e) => {
-                                        self.error_message = Some(format!("Failed to save: {}", e));
-                                    }
-                                }
-                            }
-                        }
+                    if ui.button("Save (Ctrl+S)").clicked() {
+                        self.save_file();
+                        ui.close_menu();
+                    }
+
+                    if ui.button("Save As...").clicked() {
+                        self.save_file_as();
                         ui.close_menu();
                     }
 
