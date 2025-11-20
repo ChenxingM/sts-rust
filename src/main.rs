@@ -257,6 +257,7 @@ impl StsApp {
             // 只在值改变且需要记录时记录撤销
             if record_undo && old_value != new_value {
                 self.push_undo_set_cell(layer, frame, old_value, new_value);
+                self.is_modified = true;
             }
 
             // 设置新值
@@ -370,6 +371,7 @@ impl StsApp {
                     min_frame,
                     old_values,
                 });
+                self.is_modified = true;
 
                 // 清空
                 for layer in min_layer..=max_layer {
@@ -402,6 +404,7 @@ impl StsApp {
                     min_frame,
                     old_values,
                 });
+                self.is_modified = true;
 
                 // 清空
                 for layer in min_layer..=max_layer {
@@ -420,6 +423,7 @@ impl StsApp {
 
             // 记录撤销
             self.push_undo_set_cell(layer, frame, old_value, None);
+            self.is_modified = true;
 
             // 清空单元格
             if let Some(ts) = &mut self.timesheet {
@@ -452,6 +456,7 @@ impl StsApp {
                         min_frame: start_frame,
                         old_values,
                     });
+                    self.is_modified = true;
 
                     // 粘贴新值
                     for (layer_offset, row) in self.clipboard.iter().enumerate() {
@@ -486,6 +491,7 @@ impl StsApp {
                         }
                     }
                 }
+                self.is_modified = true;
             }
         }
     }
@@ -850,6 +856,7 @@ impl eframe::App for StsApp {
                             if resp.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                                 if let Some(ts) = &mut self.timesheet {
                                     ts.layer_names[i] = self.editing_layer_text.clone();
+                                    self.is_modified = true;
                                 }
                                 self.editing_layer_name = None;
                             }
@@ -1270,6 +1277,7 @@ impl eframe::App for StsApp {
                         // 记录撤销并设置值
                         if old_value != new_value && new_value.is_some() {
                             self.push_undo_set_cell(layer, frame, old_value, new_value);
+                            self.is_modified = true;
                             if let Some(ts) = &mut self.timesheet {
                                 ts.set_cell(layer, frame, new_value);
                             }
