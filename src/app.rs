@@ -61,7 +61,10 @@ impl StsApp {
 
     pub fn open_document(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
+            .add_filter("All Supported", &["sts", "xdts", "tdts"])
             .add_filter("STS Files", &["sts"])
+            .add_filter("XDTS Files", &["xdts"])
+            .add_filter("TDTS Files", &["tdts"])
             .pick_file()
         {
             let path_str = path.to_str().unwrap();
@@ -74,15 +77,66 @@ impl StsApp {
                 return;
             }
 
-            match sts_rust::parse_sts_file(path_str) {
-                Ok(ts) => {
-                    let doc = Document::new(self.next_doc_id, ts, Some(path_str.to_string()));
-                    self.next_doc_id += 1;
-                    self.documents.push(doc);
-                    self.error_message = None;
+            // Determine file type by extension
+            let extension = path.extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+
+            match extension.as_str() {
+                "sts" => {
+                    match sts_rust::parse_sts_file(path_str) {
+                        Ok(ts) => {
+                            let doc = Document::new(self.next_doc_id, ts, Some(path_str.to_string()));
+                            self.next_doc_id += 1;
+                            self.documents.push(doc);
+                            self.error_message = None;
+                        }
+                        Err(e) => {
+                            self.error_message = Some(format!("Failed to open: {}", e));
+                        }
+                    }
                 }
-                Err(e) => {
-                    self.error_message = Some(format!("Failed to open: {}", e));
+                "xdts" => {
+                    match sts_rust::parse_xdts_file(path_str) {
+                        Ok(timesheets) => {
+                            if timesheets.is_empty() {
+                                self.error_message = Some("No timesheets found in XDTS file".to_string());
+                            } else {
+                                for ts in timesheets {
+                                    let doc = Document::new(self.next_doc_id, ts, None);
+                                    self.next_doc_id += 1;
+                                    self.documents.push(doc);
+                                }
+                                self.error_message = None;
+                            }
+                        }
+                        Err(e) => {
+                            self.error_message = Some(format!("Failed to open: {}", e));
+                        }
+                    }
+                }
+                "tdts" => {
+                    match sts_rust::parse_tdts_file(path_str) {
+                        Ok(timesheets) => {
+                            if timesheets.is_empty() {
+                                self.error_message = Some("No timesheets found in TDTS file".to_string());
+                            } else {
+                                for ts in timesheets {
+                                    let doc = Document::new(self.next_doc_id, ts, None);
+                                    self.next_doc_id += 1;
+                                    self.documents.push(doc);
+                                }
+                                self.error_message = None;
+                            }
+                        }
+                        Err(e) => {
+                            self.error_message = Some(format!("Failed to open: {}", e));
+                        }
+                    }
+                }
+                _ => {
+                    self.error_message = Some(format!("Unsupported file type: {}", extension));
                 }
             }
         }

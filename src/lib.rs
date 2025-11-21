@@ -7,4 +7,5 @@ pub use models::timesheet::CellValue;
 pub use formats::{
     parse_ae_keyframe_file, write_ae_keyframe_file,
     parse_sts_file, write_sts_file,
+    parse_xdts_file, parse_tdts_file,
 };
