@@ -1,19 +1,10 @@
 #![windows_subsystem = "windows"]
 #![allow(dead_code)] // Allow unused helper functions for future use
 
-//! STS 3.0 - Multi-window timesheet editor
-//!
-//! # Performance Optimizations
-//! - Separated state structures (EditState, SelectionState, ContextMenuState) for better cache locality
-//! - Pre-allocated string capacities to reduce memory allocations
-//! - Inline hints on hot-path functions
-//! - Cached style initialization (only once instead of per-frame)
-//! - Optimized clipboard operations with capacity pre-allocation
-//! - Merged painter calls to reduce draw call overhead
-
 use eframe::egui;
 use sts_rust::TimeSheet;
 use sts_rust::models::timesheet::CellValue;
+use std::rc::Rc;
 
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
@@ -51,20 +42,20 @@ enum UndoAction {
         layer: usize,
         frame: usize,
         old_value: Option<CellValue>,
-        new_value: Option<CellValue>,
     },
     SetRange {
         min_layer: usize,
         min_frame: usize,
-        old_values: Vec<Vec<Option<CellValue>>>,
+        old_values: Rc<Vec<Vec<Option<CellValue>>>>,
     },
 }
 
 // 编辑状态
 struct EditState {
     editing_cell: Option<(usize, usize)>,
-    editing_text: String,
     editing_layer_name: Option<usize>,
+    // 使用 String 但初始容量更小
+    editing_text: String,
     editing_layer_text: String,
 }
 
@@ -72,9 +63,10 @@ impl Default for EditState {
     fn default() -> Self {
         Self {
             editing_cell: None,
-            editing_text: String::with_capacity(8),
             editing_layer_name: None,
-            editing_layer_text: String::with_capacity(16),
+            // 初始不分配内存
+            editing_text: String::new(),
+            editing_layer_text: String::new(),
         }
     }
 }
@@ -117,33 +109,37 @@ impl Default for ContextMenuState {
     }
 }
 
+// 剪贴板数据
+type ClipboardData = Rc<Vec<Vec<Option<CellValue>>>>;
+
 // 文档结构 - 每个打开的文件对应一个Document
 struct Document {
     id: usize,
-    timesheet: TimeSheet,
-    file_path: Option<String>,
+    timesheet: Box<TimeSheet>,
+    file_path: Option<Box<str>>,
     is_modified: bool,
     is_open: bool,
     edit_state: EditState,
     selection_state: SelectionState,
     context_menu: ContextMenuState,
-    clipboard: Vec<Vec<Option<CellValue>>>,
-    undo_stack: Vec<UndoAction>,
+    clipboard: Option<ClipboardData>,
+    // 使用 Box 减少 Vec 的栈大小
+    undo_stack: Box<Vec<UndoAction>>,
 }
 
 impl Document {
     fn new(id: usize, timesheet: TimeSheet, file_path: Option<String>) -> Self {
         Self {
             id,
-            timesheet,
-            file_path,
+            timesheet: Box::new(timesheet),
+            file_path: file_path.map(|s| s.into_boxed_str()),
             is_modified: false,
             is_open: true,
             edit_state: EditState::default(),
             selection_state: SelectionState::default(),
             context_menu: ContextMenuState::default(),
-            clipboard: Vec::new(),
-            undo_stack: Vec::new(),
+            clipboard: None,
+            undo_stack: Box::new(Vec::new()),
         }
     }
 
@@ -178,7 +174,7 @@ impl Document {
     fn save_as(&mut self, path: String) -> Result<(), String> {
         match sts_rust::write_sts_file(&self.timesheet, &path) {
             Ok(_) => {
-                self.file_path = Some(path);
+                self.file_path = Some(path.into_boxed_str());
                 self.is_modified = false;
                 Ok(())
             }
@@ -226,7 +222,7 @@ impl Document {
             };
 
             if record_undo && old_value != value {
-                self.push_undo_set_cell(layer, frame, old_value, value);
+                self.push_undo_set_cell(layer, frame, old_value);
                 self.is_modified = true;
             }
 
@@ -273,16 +269,14 @@ impl Document {
 
     #[inline]
     fn copy_selection(&mut self, ctx: &egui::Context) {
-        self.clipboard.clear();
-
         let range = self.get_selection_range();
 
         if let Some((min_layer, min_frame, max_layer, max_frame)) = range {
             let row_count = max_layer - min_layer + 1;
             let col_count = max_frame - min_frame + 1;
 
-            // 预分配容量以减少内存重新分配
-            self.clipboard.reserve(row_count);
+            // 预分配容量
+            let mut clipboard_data = Vec::with_capacity(row_count);
             let mut clipboard_text = String::with_capacity(row_count * col_count * 4);
 
             for layer in min_layer..=max_layer {
@@ -304,13 +298,14 @@ impl Document {
                         None => {}
                     }
                 }
-                self.clipboard.push(row);
+                clipboard_data.push(row);
                 if layer < max_layer {
                     clipboard_text.push('\n');
                 }
             }
 
-            if !self.clipboard.is_empty() {
+            if !clipboard_data.is_empty() {
+                self.clipboard = Some(Rc::new(clipboard_data));
                 ctx.output_mut(|o| o.copied_text = clipboard_text);
             }
         }
@@ -332,7 +327,7 @@ impl Document {
             self.undo_stack.push(UndoAction::SetRange {
                 min_layer,
                 min_frame,
-                old_values,
+                old_values: Rc::new(old_values),
             });
             self.is_modified = true;
 
@@ -358,7 +353,7 @@ impl Document {
             self.undo_stack.push(UndoAction::SetRange {
                 min_layer,
                 min_frame,
-                old_values,
+                old_values: Rc::new(old_values),
             });
             self.is_modified = true;
 
@@ -369,7 +364,7 @@ impl Document {
             }
         } else if let Some((layer, frame)) = self.selection_state.selected_cell {
             let old_value = self.timesheet.get_cell(layer, frame).copied();
-            self.push_undo_set_cell(layer, frame, old_value, None);
+            self.push_undo_set_cell(layer, frame, old_value);
             self.is_modified = true;
             self.timesheet.set_cell(layer, frame, None);
         }
@@ -377,9 +372,9 @@ impl Document {
 
     fn paste_clipboard(&mut self) {
         if let Some((start_layer, start_frame)) = self.selection_state.selected_cell {
-            if !self.clipboard.is_empty() {
+            if let Some(ref clipboard) = self.clipboard {
                 let mut old_values = Vec::new();
-                for (layer_offset, row) in self.clipboard.iter().enumerate() {
+                for (layer_offset, row) in clipboard.iter().enumerate() {
                     let target_layer = start_layer + layer_offset;
                     let mut old_row = Vec::new();
                     for (frame_offset, _) in row.iter().enumerate() {
@@ -392,11 +387,11 @@ impl Document {
                 self.undo_stack.push(UndoAction::SetRange {
                     min_layer: start_layer,
                     min_frame: start_frame,
-                    old_values,
+                    old_values: Rc::new(old_values),
                 });
                 self.is_modified = true;
 
-                for (layer_offset, row) in self.clipboard.iter().enumerate() {
+                for (layer_offset, row) in clipboard.iter().enumerate() {
                     let target_layer = start_layer + layer_offset;
                     for (frame_offset, cell) in row.iter().enumerate() {
                         let target_frame = start_frame + frame_offset;
@@ -410,7 +405,7 @@ impl Document {
     fn undo(&mut self) {
         if let Some(action) = self.undo_stack.pop() {
             match action {
-                UndoAction::SetCell { layer, frame, old_value, .. } => {
+                UndoAction::SetCell { layer, frame, old_value } => {
                     self.timesheet.set_cell(layer, frame, old_value);
                 }
                 UndoAction::SetRange { min_layer, min_frame, old_values } => {
@@ -430,8 +425,7 @@ impl Document {
     }
 
     #[inline]
-    fn push_undo_set_cell(&mut self, layer: usize, frame: usize, old_value: Option<CellValue>, new_value: Option<CellValue>) {
-        // 限制撤销栈大小
+    fn push_undo_set_cell(&mut self, layer: usize, frame: usize, old_value: Option<CellValue>) {
         if self.undo_stack.len() >= MAX_UNDO_ACTIONS {
             self.undo_stack.remove(0);
         }
@@ -439,7 +433,6 @@ impl Document {
             layer,
             frame,
             old_value,
-            new_value,
         });
     }
 
@@ -519,7 +512,7 @@ impl StsApp {
 
             // 检查文件是否已打开
             if let Some(_existing) = self.documents.iter().find(|d| {
-                d.file_path.as_ref().map_or(false, |p| p == path_str)
+                d.file_path.as_ref().map_or(false, |p| p.as_ref() == path_str)
             }) {
                 self.error_message = Some(format!("File is already open: {}", path_str));
                 return;
@@ -778,10 +771,8 @@ impl eframe::App for StsApp {
             if !window_open {
                 let doc = &self.documents[doc_idx];
                 if doc.is_modified {
-                    // 有未保存的修改，显示确认对话框
                     self.closing_doc_id = Some(doc.id);
                 } else {
-                    // 没有修改，直接关闭
                     docs_to_close.push(doc_idx);
                 }
             }
@@ -1021,9 +1012,8 @@ impl StsApp {
                     doc.selection_state.selection_end = Some(end);
                     doc.copy_selection(ctx);
                 } else if let Some((layer, frame)) = doc.context_menu.pos {
-                    doc.clipboard.clear();
                     let cell = doc.timesheet.get_cell(layer, frame).copied();
-                    doc.clipboard.push(vec![cell]);
+                    doc.clipboard = Some(Rc::new(vec![vec![cell]]));
                     let text = match cell {
                         Some(CellValue::Number(n)) => n.to_string(),
                         Some(CellValue::Same) => "-".to_string(),
@@ -1218,7 +1208,7 @@ impl StsApp {
                     };
 
                     if old_value != new_value && new_value.is_some() {
-                        doc.push_undo_set_cell(layer, frame, old_value, new_value);
+                        doc.push_undo_set_cell(layer, frame, old_value);
                         doc.is_modified = true;
                         doc.timesheet.set_cell(layer, frame, new_value);
                     }
