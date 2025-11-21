@@ -7,6 +7,44 @@ mod ui;
 
 use app::StsApp;
 
+fn setup_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+
+    // 尝试加载 Windows 系统中文字体
+    let font_paths = [
+        "C:\\Windows\\Fonts\\msyh.ttc",      // Microsoft YaHei
+        "C:\\Windows\\Fonts\\simhei.ttf",    // SimHei
+        "C:\\Windows\\Fonts\\simsun.ttc",    // SimSun
+    ];
+
+    let mut font_loaded = false;
+    for font_path in &font_paths {
+        if let Ok(font_data) = std::fs::read(font_path) {
+            fonts.font_data.insert(
+                "chinese".to_owned(),
+                egui::FontData::from_owned(font_data),
+            );
+            font_loaded = true;
+            break;
+        }
+    }
+
+    if font_loaded {
+        // 将中文字体添加到所有字体族中（在默认字体之后）
+        fonts.families
+            .entry(egui::FontFamily::Proportional)
+            .or_default()
+            .push("chinese".to_owned());
+
+        fonts.families
+            .entry(egui::FontFamily::Monospace)
+            .or_default()
+            .push("chinese".to_owned());
+    }
+
+    ctx.set_fonts(fonts);
+}
+
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -18,6 +56,9 @@ fn main() -> Result<(), eframe::Error> {
     eframe::run_native(
         "STS 3.0",
         options,
-        Box::new(|_cc| Ok(Box::new(StsApp::default()))),
+        Box::new(|cc| {
+            setup_fonts(&cc.egui_ctx);
+            Ok(Box::new(StsApp::default()))
+        }),
     )
 }

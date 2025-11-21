@@ -59,86 +59,105 @@ impl StsApp {
         self.show_new_dialog = false;
     }
 
+    /// Load a file from the given path
+    fn load_file_from_path(&mut self, path_str: &str) {
+        // 检查文件是否已打开
+        if let Some(_existing) = self.documents.iter().find(|d| {
+            d.file_path.as_ref().map_or(false, |p| p.as_ref() == path_str)
+        }) {
+            self.error_message = Some(format!("File is already open: {}", path_str));
+            return;
+        }
+
+        // Determine file type by extension
+        let extension = std::path::Path::new(path_str)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        match extension.as_str() {
+            "sts" => {
+                match sts_rust::parse_sts_file(path_str) {
+                    Ok(ts) => {
+                        let doc = Document::new(self.next_doc_id, ts, Some(path_str.to_string()));
+                        self.next_doc_id += 1;
+                        self.documents.push(doc);
+                        self.error_message = None;
+                    }
+                    Err(e) => {
+                        self.error_message = Some(format!("Failed to open: {}", e));
+                    }
+                }
+            }
+            "xdts" => {
+                match sts_rust::parse_xdts_file(path_str) {
+                    Ok(timesheets) => {
+                        if timesheets.is_empty() {
+                            self.error_message = Some("No timesheets found in XDTS file".to_string());
+                        } else {
+                            for ts in timesheets {
+                                let doc = Document::new(self.next_doc_id, ts, None);
+                                self.next_doc_id += 1;
+                                self.documents.push(doc);
+                            }
+                            self.error_message = None;
+                        }
+                    }
+                    Err(e) => {
+                        self.error_message = Some(format!("Failed to open: {}", e));
+                    }
+                }
+            }
+            "tdts" => {
+                match sts_rust::parse_tdts_file(path_str) {
+                    Ok(timesheets) => {
+                        if timesheets.is_empty() {
+                            self.error_message = Some("No timesheets found in TDTS file".to_string());
+                        } else {
+                            for ts in timesheets {
+                                let doc = Document::new(self.next_doc_id, ts, None);
+                                self.next_doc_id += 1;
+                                self.documents.push(doc);
+                            }
+                            self.error_message = None;
+                        }
+                    }
+                    Err(e) => {
+                        self.error_message = Some(format!("Failed to open: {}", e));
+                    }
+                }
+            }
+            "csv" => {
+                match sts_rust::parse_csv_file(path_str) {
+                    Ok(ts) => {
+                        let doc = Document::new(self.next_doc_id, ts, None);
+                        self.next_doc_id += 1;
+                        self.documents.push(doc);
+                        self.error_message = None;
+                    }
+                    Err(e) => {
+                        self.error_message = Some(format!("Failed to open: {}", e));
+                    }
+                }
+            }
+            _ => {
+                self.error_message = Some(format!("Unsupported file type: {}", extension));
+            }
+        }
+    }
+
     pub fn open_document(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("All Supported", &["sts", "xdts", "tdts"])
+            .add_filter("All Supported", &["sts", "xdts", "tdts", "csv"])
             .add_filter("STS Files", &["sts"])
             .add_filter("XDTS Files", &["xdts"])
             .add_filter("TDTS Files", &["tdts"])
+            .add_filter("CSV Files", &["csv"])
             .pick_file()
         {
             let path_str = path.to_str().unwrap();
-
-            // 检查文件是否已打开
-            if let Some(_existing) = self.documents.iter().find(|d| {
-                d.file_path.as_ref().map_or(false, |p| p.as_ref() == path_str)
-            }) {
-                self.error_message = Some(format!("File is already open: {}", path_str));
-                return;
-            }
-
-            // Determine file type by extension
-            let extension = path.extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-
-            match extension.as_str() {
-                "sts" => {
-                    match sts_rust::parse_sts_file(path_str) {
-                        Ok(ts) => {
-                            let doc = Document::new(self.next_doc_id, ts, Some(path_str.to_string()));
-                            self.next_doc_id += 1;
-                            self.documents.push(doc);
-                            self.error_message = None;
-                        }
-                        Err(e) => {
-                            self.error_message = Some(format!("Failed to open: {}", e));
-                        }
-                    }
-                }
-                "xdts" => {
-                    match sts_rust::parse_xdts_file(path_str) {
-                        Ok(timesheets) => {
-                            if timesheets.is_empty() {
-                                self.error_message = Some("No timesheets found in XDTS file".to_string());
-                            } else {
-                                for ts in timesheets {
-                                    let doc = Document::new(self.next_doc_id, ts, None);
-                                    self.next_doc_id += 1;
-                                    self.documents.push(doc);
-                                }
-                                self.error_message = None;
-                            }
-                        }
-                        Err(e) => {
-                            self.error_message = Some(format!("Failed to open: {}", e));
-                        }
-                    }
-                }
-                "tdts" => {
-                    match sts_rust::parse_tdts_file(path_str) {
-                        Ok(timesheets) => {
-                            if timesheets.is_empty() {
-                                self.error_message = Some("No timesheets found in TDTS file".to_string());
-                            } else {
-                                for ts in timesheets {
-                                    let doc = Document::new(self.next_doc_id, ts, None);
-                                    self.next_doc_id += 1;
-                                    self.documents.push(doc);
-                                }
-                                self.error_message = None;
-                            }
-                        }
-                        Err(e) => {
-                            self.error_message = Some(format!("Failed to open: {}", e));
-                        }
-                    }
-                }
-                _ => {
-                    self.error_message = Some(format!("Unsupported file type: {}", extension));
-                }
-            }
+            self.load_file_from_path(path_str);
         }
     }
 
@@ -199,6 +218,19 @@ impl eframe::App for StsApp {
             }
             if i.modifiers.ctrl && i.key_pressed(egui::Key::O) {
                 self.open_document();
+            }
+        });
+
+        // 拖拽文件支持
+        ctx.input(|i| {
+            if !i.raw.dropped_files.is_empty() {
+                for file in &i.raw.dropped_files {
+                    if let Some(path) = &file.path {
+                        if let Some(path_str) = path.to_str() {
+                            self.load_file_from_path(path_str);
+                        }
+                    }
+                }
             }
         });
 
