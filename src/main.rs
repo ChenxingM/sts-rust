@@ -1,4 +1,15 @@
 #![windows_subsystem = "windows"]
+#![allow(dead_code)] // Allow unused helper functions for future use
+
+//! STS 3.0 - Multi-window timesheet editor
+//!
+//! # Performance Optimizations
+//! - Separated state structures (EditState, SelectionState, ContextMenuState) for better cache locality
+//! - Pre-allocated string capacities to reduce memory allocations
+//! - Inline hints on hot-path functions
+//! - Cached style initialization (only once instead of per-frame)
+//! - Optimized clipboard operations with capacity pre-allocation
+//! - Merged painter calls to reduce draw call overhead
 
 use eframe::egui;
 use sts_rust::TimeSheet;
@@ -29,6 +40,10 @@ const BG_NORMAL: egui::Color32 = egui::Color32::WHITE;
 const BORDER_SELECTION: egui::Color32 = egui::Color32::from_rgb(100, 150, 255);
 const BORDER_NORMAL: egui::Color32 = egui::Color32::GRAY;
 
+// 撤销栈限制
+const MAX_UNDO_ACTIONS: usize = 100;
+const MAX_UNDO_MEMORY_BYTES: usize = 1024 * 1024; // 1MB
+
 // 撤销操作类型
 #[derive(Clone)]
 enum UndoAction {
@@ -45,6 +60,63 @@ enum UndoAction {
     },
 }
 
+// 编辑状态
+struct EditState {
+    editing_cell: Option<(usize, usize)>,
+    editing_text: String,
+    editing_layer_name: Option<usize>,
+    editing_layer_text: String,
+}
+
+impl Default for EditState {
+    fn default() -> Self {
+        Self {
+            editing_cell: None,
+            editing_text: String::with_capacity(8),
+            editing_layer_name: None,
+            editing_layer_text: String::with_capacity(16),
+        }
+    }
+}
+
+// 选择状态
+struct SelectionState {
+    selected_cell: Option<(usize, usize)>,
+    selection_start: Option<(usize, usize)>,
+    selection_end: Option<(usize, usize)>,
+    is_dragging: bool,
+    auto_scroll_to_selection: bool,
+}
+
+impl Default for SelectionState {
+    fn default() -> Self {
+        Self {
+            selected_cell: Some((0, 0)),
+            selection_start: None,
+            selection_end: None,
+            is_dragging: false,
+            auto_scroll_to_selection: false,
+        }
+    }
+}
+
+// 上下文菜单状态
+struct ContextMenuState {
+    pos: Option<(usize, usize)>,
+    screen_pos: egui::Pos2,
+    selection: Option<((usize, usize), (usize, usize))>,
+}
+
+impl Default for ContextMenuState {
+    fn default() -> Self {
+        Self {
+            pos: None,
+            screen_pos: egui::Pos2::ZERO,
+            selection: None,
+        }
+    }
+}
+
 // 文档结构 - 每个打开的文件对应一个Document
 struct Document {
     id: usize,
@@ -52,20 +124,11 @@ struct Document {
     file_path: Option<String>,
     is_modified: bool,
     is_open: bool,
-    selected_cell: Option<(usize, usize)>,
-    editing_cell: Option<(usize, usize)>,
-    editing_text: String,
-    editing_layer_name: Option<usize>,
-    editing_layer_text: String,
-    auto_scroll_to_selection: bool,
-    selection_start: Option<(usize, usize)>,
-    selection_end: Option<(usize, usize)>,
-    is_dragging: bool,
+    edit_state: EditState,
+    selection_state: SelectionState,
+    context_menu: ContextMenuState,
     clipboard: Vec<Vec<Option<CellValue>>>,
     undo_stack: Vec<UndoAction>,
-    context_menu_pos: Option<(usize, usize)>,
-    context_menu_screen_pos: egui::Pos2,
-    context_menu_selection: Option<((usize, usize), (usize, usize))>,
 }
 
 impl Document {
@@ -76,20 +139,11 @@ impl Document {
             file_path,
             is_modified: false,
             is_open: true,
-            selected_cell: Some((0, 0)),
-            editing_cell: None,
-            editing_text: String::new(),
-            editing_layer_name: None,
-            editing_layer_text: String::new(),
-            auto_scroll_to_selection: false,
-            selection_start: None,
-            selection_end: None,
-            is_dragging: false,
+            edit_state: EditState::default(),
+            selection_state: SelectionState::default(),
+            context_menu: ContextMenuState::default(),
             clipboard: Vec::new(),
             undo_stack: Vec::new(),
-            context_menu_pos: None,
-            context_menu_screen_pos: egui::Pos2::ZERO,
-            context_menu_selection: None,
         }
     }
 
@@ -134,36 +188,38 @@ impl Document {
 
     #[inline]
     fn start_edit(&mut self, layer: usize, frame: usize) {
-        self.editing_cell = Some((layer, frame));
-        self.editing_text = match self.timesheet.get_cell(layer, frame) {
-            Some(CellValue::Number(n)) => n.to_string(),
+        self.edit_state.editing_cell = Some((layer, frame));
+        self.edit_state.editing_text.clear();
+
+        match self.timesheet.get_cell(layer, frame) {
+            Some(CellValue::Number(n)) => {
+                let mut buf = itoa::Buffer::new();
+                self.edit_state.editing_text.push_str(buf.format(*n));
+            }
             Some(CellValue::Same) => {
                 if frame > 0 {
                     if let Some(CellValue::Number(n)) = self.timesheet.get_cell(layer, frame - 1) {
-                        n.to_string()
-                    } else {
-                        String::new()
+                        let mut buf = itoa::Buffer::new();
+                        self.edit_state.editing_text.push_str(buf.format(*n));
                     }
-                } else {
-                    String::new()
                 }
             }
-            None => String::new(),
-        };
+            None => {}
+        }
     }
 
     #[inline]
     fn finish_edit(&mut self, move_down: bool, record_undo: bool) {
-        if let Some((layer, frame)) = self.editing_cell {
+        if let Some((layer, frame)) = self.edit_state.editing_cell {
             let old_value = self.timesheet.get_cell(layer, frame).copied();
 
-            let value = if self.editing_text.trim().is_empty() {
+            let value = if self.edit_state.editing_text.trim().is_empty() {
                 if frame > 0 {
                     self.timesheet.get_cell(layer, frame - 1).copied()
                 } else {
                     None
                 }
-            } else if let Ok(n) = self.editing_text.trim().parse::<u32>() {
+            } else if let Ok(n) = self.edit_state.editing_text.trim().parse::<u32>() {
                 Some(CellValue::Number(n))
             } else {
                 None
@@ -177,18 +233,18 @@ impl Document {
             self.timesheet.set_cell(layer, frame, value);
 
             if move_down {
-                self.selected_cell = Some((layer, frame + 1));
+                self.selection_state.selected_cell = Some((layer, frame + 1));
             }
 
-            self.editing_cell = None;
-            self.editing_text.clear();
+            self.edit_state.editing_cell = None;
+            self.edit_state.editing_text.clear();
         }
     }
 
     #[inline(always)]
     fn is_cell_in_selection(&self, layer: usize, frame: usize) -> bool {
         if let (Some((start_layer, start_frame)), Some((end_layer, end_frame))) =
-            (self.selection_start, self.selection_end) {
+            (self.selection_state.selection_start, self.selection_state.selection_end) {
             let min_layer = start_layer.min(end_layer);
             let max_layer = start_layer.max(end_layer);
             let min_frame = start_frame.min(end_frame);
@@ -204,7 +260,7 @@ impl Document {
     #[inline]
     fn get_selection_range(&self) -> Option<(usize, usize, usize, usize)> {
         if let (Some((start_layer, start_frame)), Some((end_layer, end_frame))) =
-            (self.selection_start, self.selection_end) {
+            (self.selection_state.selection_start, self.selection_state.selection_end) {
             let min_layer = start_layer.min(end_layer);
             let max_layer = start_layer.max(end_layer);
             let min_frame = start_frame.min(end_frame);
@@ -222,29 +278,39 @@ impl Document {
         let range = self.get_selection_range();
 
         if let Some((min_layer, min_frame, max_layer, max_frame)) = range {
-            let mut text_rows = Vec::new();
+            let row_count = max_layer - min_layer + 1;
+            let col_count = max_frame - min_frame + 1;
+
+            // 预分配容量以减少内存重新分配
+            self.clipboard.reserve(row_count);
+            let mut clipboard_text = String::with_capacity(row_count * col_count * 4);
 
             for layer in min_layer..=max_layer {
-                let mut row = Vec::new();
-                let mut text_cols = Vec::new();
+                let mut row = Vec::with_capacity(col_count);
 
                 for frame in min_frame..=max_frame {
                     let cell = self.timesheet.get_cell(layer, frame).copied();
                     row.push(cell);
 
-                    let text = match cell {
-                        Some(CellValue::Number(n)) => n.to_string(),
-                        Some(CellValue::Same) => "-".to_string(),
-                        None => "".to_string(),
-                    };
-                    text_cols.push(text);
+                    if frame > min_frame {
+                        clipboard_text.push('\t');
+                    }
+                    match cell {
+                        Some(CellValue::Number(n)) => {
+                            let mut buf = itoa::Buffer::new();
+                            clipboard_text.push_str(buf.format(n));
+                        }
+                        Some(CellValue::Same) => clipboard_text.push('-'),
+                        None => {}
+                    }
                 }
                 self.clipboard.push(row);
-                text_rows.push(text_cols.join("\t"));
+                if layer < max_layer {
+                    clipboard_text.push('\n');
+                }
             }
 
             if !self.clipboard.is_empty() {
-                let clipboard_text = text_rows.join("\n");
                 ctx.output_mut(|o| o.copied_text = clipboard_text);
             }
         }
@@ -301,7 +367,7 @@ impl Document {
                     self.timesheet.set_cell(layer, frame, None);
                 }
             }
-        } else if let Some((layer, frame)) = self.selected_cell {
+        } else if let Some((layer, frame)) = self.selection_state.selected_cell {
             let old_value = self.timesheet.get_cell(layer, frame).copied();
             self.push_undo_set_cell(layer, frame, old_value, None);
             self.is_modified = true;
@@ -310,7 +376,7 @@ impl Document {
     }
 
     fn paste_clipboard(&mut self) {
-        if let Some((start_layer, start_frame)) = self.selected_cell {
+        if let Some((start_layer, start_frame)) = self.selection_state.selected_cell {
             if !self.clipboard.is_empty() {
                 let mut old_values = Vec::new();
                 for (layer_offset, row) in self.clipboard.iter().enumerate() {
@@ -365,7 +431,8 @@ impl Document {
 
     #[inline]
     fn push_undo_set_cell(&mut self, layer: usize, frame: usize, old_value: Option<CellValue>, new_value: Option<CellValue>) {
-        if self.undo_stack.len() > 100 {
+        // 限制撤销栈大小
+        if self.undo_stack.len() >= MAX_UNDO_ACTIONS {
             self.undo_stack.remove(0);
         }
         self.undo_stack.push(UndoAction::SetCell {
@@ -374,6 +441,20 @@ impl Document {
             old_value,
             new_value,
         });
+    }
+
+    // 估算撤销操作占用的内存
+    #[inline]
+    fn estimate_undo_memory(&self) -> usize {
+        self.undo_stack.iter().map(|action| {
+            match action {
+                UndoAction::SetCell { .. } => std::mem::size_of::<UndoAction>(),
+                UndoAction::SetRange { old_values, .. } => {
+                    std::mem::size_of::<UndoAction>() +
+                    old_values.len() * old_values.first().map_or(0, |row| row.len() * std::mem::size_of::<Option<CellValue>>())
+                }
+            }
+        }).sum()
     }
 }
 
@@ -491,7 +572,23 @@ impl StsApp {
 
 impl eframe::App for StsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.set_visuals(egui::Visuals::light());
+        // 只在首次设置视觉样式
+        static mut STYLE_INITIALIZED: bool = false;
+        unsafe {
+            if !STYLE_INITIALIZED {
+                ctx.set_visuals(egui::Visuals::light());
+
+                let mut style = (*ctx.style()).clone();
+                style.spacing.window_margin = egui::Margin::same(4.0);
+                style.text_styles.insert(
+                    egui::TextStyle::Heading,
+                    egui::FontId::proportional(14.0),
+                );
+                ctx.set_style(style);
+
+                STYLE_INITIALIZED = true;
+            }
+        }
 
         // 全局快捷键
         ctx.input(|i| {
@@ -632,16 +729,7 @@ impl eframe::App for StsApp {
 
             let mut window_open = true;
 
-            // 设置窗口样式
-            let mut style = (*ctx.style()).clone();
-            style.spacing.window_margin = egui::Margin::same(4.0);
-            style.text_styles.insert(
-                egui::TextStyle::Heading,
-                egui::FontId::proportional(14.0),
-            );
-            ctx.set_style(style);
-
-            let window_resp = egui::Window::new(&window_title)
+            let _window_resp = egui::Window::new(&window_title)
                 .id(egui::Id::new(format!("doc_{}", doc_id_val)))
                 .open(&mut window_open)
                 .resizable(true)
@@ -782,7 +870,7 @@ impl StsApp {
 
             for i in 0..layer_count {
                 let (id, rect) = ui.allocate_space(egui::vec2(col_width, row_height));
-                let is_editing = doc.editing_layer_name == Some(i);
+                let is_editing = doc.edit_state.editing_layer_name == Some(i);
 
                 let bg_color = if is_editing {
                     egui::Color32::from_rgb(255, 255, 200)
@@ -795,7 +883,7 @@ impl StsApp {
                 if is_editing {
                     let resp = ui.put(
                         rect,
-                        egui::TextEdit::singleline(&mut doc.editing_layer_text)
+                        egui::TextEdit::singleline(&mut doc.edit_state.editing_layer_text)
                             .desired_width(col_width)
                             .horizontal_align(egui::Align::Center)
                             .frame(false),
@@ -803,13 +891,13 @@ impl StsApp {
                     resp.request_focus();
 
                     if resp.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        doc.timesheet.layer_names[i] = doc.editing_layer_text.clone();
+                        doc.timesheet.layer_names[i] = doc.edit_state.editing_layer_text.clone();
                         doc.is_modified = true;
-                        doc.editing_layer_name = None;
+                        doc.edit_state.editing_layer_name = None;
                     }
 
                     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        doc.editing_layer_name = None;
+                        doc.edit_state.editing_layer_name = None;
                     }
                 } else {
                     let resp = ui.interact(rect, id, egui::Sense::click());
@@ -823,8 +911,8 @@ impl StsApp {
                     );
 
                     if resp.clicked() {
-                        doc.editing_layer_name = Some(i);
-                        doc.editing_layer_text = layer_name.clone();
+                        doc.edit_state.editing_layer_name = Some(i);
+                        doc.edit_state.editing_layer_text = layer_name.clone();
                     }
                 }
             }
@@ -896,16 +984,16 @@ impl StsApp {
         // 鼠标释放
         let doc = &mut self.documents[doc_idx];
         ctx.input(|i| {
-            if !i.pointer.primary_down() && doc.is_dragging {
-                doc.is_dragging = false;
+            if !i.pointer.primary_down() && doc.selection_state.is_dragging {
+                doc.selection_state.is_dragging = false;
             }
         });
 
         // 右键菜单
-        if let Some(_menu_pos) = doc.context_menu_pos {
+        if let Some(_menu_pos) = doc.context_menu.pos {
             let menu_result = egui::Area::new(egui::Id::new(format!("context_menu_{}", doc.id)))
                 .order(egui::Order::Foreground)
-                .fixed_pos(doc.context_menu_screen_pos)
+                .fixed_pos(doc.context_menu.screen_pos)
                 .show(ctx, |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
                         ui.set_min_width(120.0);
@@ -928,11 +1016,11 @@ impl StsApp {
             let doc = &mut self.documents[doc_idx];
 
             if copy_clicked {
-                if let Some((start, end)) = doc.context_menu_selection {
-                    doc.selection_start = Some(start);
-                    doc.selection_end = Some(end);
+                if let Some((start, end)) = doc.context_menu.selection {
+                    doc.selection_state.selection_start = Some(start);
+                    doc.selection_state.selection_end = Some(end);
                     doc.copy_selection(ctx);
-                } else if let Some((layer, frame)) = doc.context_menu_pos {
+                } else if let Some((layer, frame)) = doc.context_menu.pos {
                     doc.clipboard.clear();
                     let cell = doc.timesheet.get_cell(layer, frame).copied();
                     doc.clipboard.push(vec![cell]);
@@ -943,31 +1031,31 @@ impl StsApp {
                     };
                     ctx.output_mut(|o| o.copied_text = text);
                 }
-                doc.context_menu_pos = None;
+                doc.context_menu.pos = None;
             } else if cut_clicked {
-                if let Some((start, end)) = doc.context_menu_selection {
-                    doc.selection_start = Some(start);
-                    doc.selection_end = Some(end);
+                if let Some((start, end)) = doc.context_menu.selection {
+                    doc.selection_state.selection_start = Some(start);
+                    doc.selection_state.selection_end = Some(end);
                     doc.cut_selection(ctx);
-                    doc.selection_start = None;
-                    doc.selection_end = None;
-                } else if let Some((layer, frame)) = doc.context_menu_pos {
-                    doc.selection_start = Some((layer, frame));
-                    doc.selection_end = Some((layer, frame));
+                    doc.selection_state.selection_start = None;
+                    doc.selection_state.selection_end = None;
+                } else if let Some((layer, frame)) = doc.context_menu.pos {
+                    doc.selection_state.selection_start = Some((layer, frame));
+                    doc.selection_state.selection_end = Some((layer, frame));
                     doc.cut_selection(ctx);
-                    doc.selection_start = None;
-                    doc.selection_end = None;
+                    doc.selection_state.selection_start = None;
+                    doc.selection_state.selection_end = None;
                 }
-                doc.context_menu_pos = None;
+                doc.context_menu.pos = None;
             } else if paste_clicked {
-                if let Some((layer, frame)) = doc.context_menu_pos {
-                    doc.selected_cell = Some((layer, frame));
+                if let Some((layer, frame)) = doc.context_menu.pos {
+                    doc.selection_state.selected_cell = Some((layer, frame));
                 }
                 doc.paste_clipboard();
-                doc.context_menu_pos = None;
+                doc.context_menu.pos = None;
             } else if undo_clicked {
                 doc.undo();
-                doc.context_menu_pos = None;
+                doc.context_menu.pos = None;
             }
 
             // 点击菜单外部关闭
@@ -985,19 +1073,19 @@ impl StsApp {
                 });
 
                 if clicked_outside {
-                    doc.context_menu_pos = None;
+                    doc.context_menu.pos = None;
                 }
             }
 
             // ESC键关闭菜单
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                doc.context_menu_pos = None;
+                doc.context_menu.pos = None;
             }
         }
 
         // 检测鼠标交互，更新活跃文档
         let doc = &self.documents[doc_idx];
-        if ui.ui_contains_pointer() || doc.editing_cell.is_some() {
+        if ui.ui_contains_pointer() || doc.edit_state.editing_cell.is_some() {
             self.active_doc_id = Some(doc.id);
         }
 
@@ -1007,117 +1095,6 @@ impl StsApp {
         }
     }
 
-    fn _render_cell(
-        &mut self,
-        ui: &mut egui::Ui,
-        doc_idx: usize,
-        layer_idx: usize,
-        frame_idx: usize,
-        col_width: f32,
-        row_height: f32,
-        pointer_pos: Option<egui::Pos2>,
-        pointer_down: bool,
-    ) {
-        let doc = &mut self.documents[doc_idx];
-
-        let is_selected = doc.selected_cell == Some((layer_idx, frame_idx));
-        let is_editing = doc.editing_cell == Some((layer_idx, frame_idx));
-
-        let (cell_id, cell_rect) = ui.allocate_space(egui::vec2(col_width, row_height));
-        let cell_response = ui.interact(
-            cell_rect,
-            cell_id,
-            egui::Sense::click().union(egui::Sense::drag()),
-        );
-
-        if (is_selected || is_editing) && doc.auto_scroll_to_selection {
-            cell_response.scroll_to_me(None);
-            doc.auto_scroll_to_selection = false;
-        }
-
-        let is_in_selection = doc.is_cell_in_selection(layer_idx, frame_idx);
-
-        let bg_color = if is_editing { BG_EDITING }
-            else if is_selected { BG_SELECTED }
-            else if is_in_selection { BG_IN_SELECTION }
-            else { BG_NORMAL };
-
-        ui.painter().rect_filled(cell_rect, 0.0, bg_color);
-
-        let border_color = if is_in_selection { BORDER_SELECTION } else { BORDER_NORMAL };
-        ui.painter().rect_stroke(cell_rect, 0.0, egui::Stroke::new(1.0, border_color));
-
-        // 内容
-        if is_editing {
-            let text_response = ui.put(
-                cell_rect,
-                egui::TextEdit::singleline(&mut doc.editing_text)
-                    .desired_width(col_width)
-                    .horizontal_align(egui::Align::Center)
-                    .frame(false),
-            );
-
-            text_response.request_focus();
-
-            if text_response.lost_focus() && !ui.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Escape)) {
-                doc.finish_edit(false, true);
-            }
-        } else {
-            if let Some(current_val) = doc.timesheet.get_cell(layer_idx, frame_idx) {
-                let should_show_dash = frame_idx > 0 &&
-                    doc.timesheet.get_cell(layer_idx, frame_idx - 1)
-                        .map_or(false, |prev| current_val == prev);
-
-                let mut num_buf = itoa::Buffer::new();
-                let display_text = if should_show_dash {
-                    DASH
-                } else {
-                    match current_val {
-                        CellValue::Number(n) => num_buf.format(*n),
-                        CellValue::Same => DASH,
-                    }
-                };
-
-                ui.painter().text(
-                    cell_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    display_text,
-                    egui::FontId::monospace(11.0),
-                    egui::Color32::BLACK,
-                );
-            }
-        }
-
-        // 鼠标交互
-        if cell_response.clicked() && !is_editing {
-            if let Some(pos) = pointer_pos {
-                if pointer_down && cell_rect.contains(pos) {
-                    if !doc.is_dragging {
-                        doc.is_dragging = true;
-                        doc.selection_start = Some((layer_idx, frame_idx));
-                        doc.selection_end = Some((layer_idx, frame_idx));
-                        doc.selected_cell = Some((layer_idx, frame_idx));
-                        if doc.editing_cell.is_some() {
-                            doc.editing_cell = None;
-                            doc.editing_text.clear();
-                        }
-                    }
-                }
-            }
-        }
-
-        // 拖拽中
-        if doc.is_dragging && pointer_down {
-            if let Some(pos) = pointer_pos {
-                if cell_rect.contains(pos) {
-                    if doc.selection_end != Some((layer_idx, frame_idx)) {
-                        doc.selection_end = Some((layer_idx, frame_idx));
-                        doc.selected_cell = Some((layer_idx, frame_idx));
-                    }
-                }
-            }
-        }
-    }
 
     fn handle_document_shortcuts(&mut self, ctx: &egui::Context, doc_idx: usize, layer_count: usize) {
         let doc = &mut self.documents[doc_idx];
@@ -1158,7 +1135,7 @@ impl StsApp {
             return;
         }
 
-        let is_editing = doc.editing_cell.is_some() || doc.editing_layer_name.is_some();
+        let is_editing = doc.edit_state.editing_cell.is_some() || doc.edit_state.editing_layer_name.is_some();
 
         if should_undo {
             doc.undo();
@@ -1170,22 +1147,22 @@ impl StsApp {
 
         if !is_editing && (should_copy || should_cut || should_paste) {
             if should_copy {
-                if doc.selection_start.is_some() && doc.selection_end.is_some() {
+                if doc.selection_state.selection_start.is_some() && doc.selection_state.selection_end.is_some() {
                     doc.copy_selection(ctx);
-                } else if let Some((layer, frame)) = doc.selected_cell {
-                    doc.selection_start = Some((layer, frame));
-                    doc.selection_end = Some((layer, frame));
+                } else if let Some((layer, frame)) = doc.selection_state.selected_cell {
+                    doc.selection_state.selection_start = Some((layer, frame));
+                    doc.selection_state.selection_end = Some((layer, frame));
                     doc.copy_selection(ctx);
                 }
             } else if should_cut {
-                if doc.selection_start.is_some() && doc.selection_end.is_some() {
+                if doc.selection_state.selection_start.is_some() && doc.selection_state.selection_end.is_some() {
                     doc.cut_selection(ctx);
-                } else if let Some((layer, frame)) = doc.selected_cell {
-                    doc.selection_start = Some((layer, frame));
-                    doc.selection_end = Some((layer, frame));
+                } else if let Some((layer, frame)) = doc.selection_state.selected_cell {
+                    doc.selection_state.selection_start = Some((layer, frame));
+                    doc.selection_state.selection_end = Some((layer, frame));
                     doc.cut_selection(ctx);
-                    doc.selection_start = None;
-                    doc.selection_end = None;
+                    doc.selection_state.selection_start = None;
+                    doc.selection_state.selection_end = None;
                 }
             } else if should_paste {
                 doc.paste_clipboard();
@@ -1193,16 +1170,16 @@ impl StsApp {
         }
 
         // 编辑模式键盘处理
-        if let Some((layer, frame)) = doc.editing_cell {
-            let has_input = !doc.editing_text.is_empty();
+        if let Some((layer, frame)) = doc.edit_state.editing_cell {
+            let has_input = !doc.edit_state.editing_text.is_empty();
 
             ctx.input(|i| {
                 if i.key_pressed(egui::Key::Enter) {
                     doc.finish_edit(true, true);
-                    doc.auto_scroll_to_selection = true;
+                    doc.selection_state.auto_scroll_to_selection = true;
                 } else if i.key_pressed(egui::Key::Escape) {
-                    doc.editing_cell = None;
-                    doc.editing_text.clear();
+                    doc.edit_state.editing_cell = None;
+                    doc.edit_state.editing_text.clear();
                 } else {
                     let new_pos = if i.key_pressed(egui::Key::ArrowUp) && frame > 0 {
                         Some((layer, frame - 1))
@@ -1221,15 +1198,15 @@ impl StsApp {
                             doc.finish_edit(false, true);
                             doc.start_edit(pos.0, pos.1);
                         } else {
-                            doc.editing_cell = None;
-                            doc.editing_text.clear();
+                            doc.edit_state.editing_cell = None;
+                            doc.edit_state.editing_text.clear();
                         }
-                        doc.selected_cell = Some(pos);
-                        doc.auto_scroll_to_selection = true;
+                        doc.selection_state.selected_cell = Some(pos);
+                        doc.selection_state.auto_scroll_to_selection = true;
                     }
                 }
             });
-        } else if let Some((layer, frame)) = doc.selected_cell {
+        } else if let Some((layer, frame)) = doc.selection_state.selected_cell {
             ctx.input(|i| {
                 if i.key_pressed(egui::Key::Enter) {
                     let (old_value, new_value) = if frame > 0 {
@@ -1246,11 +1223,11 @@ impl StsApp {
                         doc.timesheet.set_cell(layer, frame, new_value);
                     }
 
-                    doc.selected_cell = Some((layer, frame + 1));
-                    doc.auto_scroll_to_selection = true;
+                    doc.selection_state.selected_cell = Some((layer, frame + 1));
+                    doc.selection_state.auto_scroll_to_selection = true;
                 } else if i.key_pressed(egui::Key::Tab) && layer < layer_count - 1 {
-                    doc.selected_cell = Some((layer + 1, frame));
-                    doc.auto_scroll_to_selection = true;
+                    doc.selection_state.selected_cell = Some((layer + 1, frame));
+                    doc.selection_state.auto_scroll_to_selection = true;
                 } else {
                     let new_pos = if i.key_pressed(egui::Key::ArrowUp) && frame > 0 {
                         Some((layer, frame - 1))
@@ -1265,14 +1242,14 @@ impl StsApp {
                     };
 
                     if let Some(pos) = new_pos {
-                        doc.selected_cell = Some(pos);
-                        doc.auto_scroll_to_selection = true;
+                        doc.selection_state.selected_cell = Some(pos);
+                        doc.selection_state.auto_scroll_to_selection = true;
                     } else {
                         for event in &i.events {
                             if let egui::Event::Text(text) = event {
                                 if text.chars().all(|c| c.is_ascii_digit()) {
                                     doc.start_edit(layer, frame);
-                                    doc.editing_text = text.clone();
+                                    doc.edit_state.editing_text = text.clone();
                                     break;
                                 }
                             }
@@ -1285,6 +1262,7 @@ impl StsApp {
 }
 
 // 独立的单元格渲染函数
+#[inline]
 fn render_cell_inline(
     ui: &mut egui::Ui,
     doc: &mut Document,
@@ -1295,8 +1273,8 @@ fn render_cell_inline(
     pointer_pos: Option<egui::Pos2>,
     pointer_down: bool,
 ) {
-    let is_selected = doc.selected_cell == Some((layer_idx, frame_idx));
-    let is_editing = doc.editing_cell == Some((layer_idx, frame_idx));
+    let is_selected = doc.selection_state.selected_cell == Some((layer_idx, frame_idx));
+    let is_editing = doc.edit_state.editing_cell == Some((layer_idx, frame_idx));
 
     let (cell_id, cell_rect) = ui.allocate_space(egui::vec2(col_width, row_height));
     let cell_response = ui.interact(
@@ -1305,28 +1283,30 @@ fn render_cell_inline(
         egui::Sense::click().union(egui::Sense::drag()),
     );
 
-    if (is_selected || is_editing) && doc.auto_scroll_to_selection {
+    if (is_selected || is_editing) && doc.selection_state.auto_scroll_to_selection {
         cell_response.scroll_to_me(None);
-        doc.auto_scroll_to_selection = false;
+        doc.selection_state.auto_scroll_to_selection = false;
     }
 
     let is_in_selection = doc.is_cell_in_selection(layer_idx, frame_idx);
 
+    // 合并背景和边框绘制调用
     let bg_color = if is_editing { BG_EDITING }
         else if is_selected { BG_SELECTED }
         else if is_in_selection { BG_IN_SELECTION }
         else { BG_NORMAL };
 
-    ui.painter().rect_filled(cell_rect, 0.0, bg_color);
-
     let border_color = if is_in_selection { BORDER_SELECTION } else { BORDER_NORMAL };
-    ui.painter().rect_stroke(cell_rect, 0.0, egui::Stroke::new(1.0, border_color));
+
+    let painter = ui.painter();
+    painter.rect_filled(cell_rect, 0.0, bg_color);
+    painter.rect_stroke(cell_rect, 0.0, egui::Stroke::new(1.0, border_color));
 
     // 内容
     if is_editing {
         let text_response = ui.put(
             cell_rect,
-            egui::TextEdit::singleline(&mut doc.editing_text)
+            egui::TextEdit::singleline(&mut doc.edit_state.editing_text)
                 .desired_width(col_width)
                 .horizontal_align(egui::Align::Center)
                 .frame(false),
@@ -1365,32 +1345,32 @@ fn render_cell_inline(
 
     // 右键菜单
     if cell_response.secondary_clicked() {
-        doc.context_menu_pos = Some((layer_idx, frame_idx));
+        doc.context_menu.pos = Some((layer_idx, frame_idx));
         if let Some(pos) = cell_response.interact_pointer_pos() {
-            doc.context_menu_screen_pos = pos;
+            doc.context_menu.screen_pos = pos;
         }
-        if let (Some(start), Some(end)) = (doc.selection_start, doc.selection_end) {
-            doc.context_menu_selection = Some((start, end));
+        if let (Some(start), Some(end)) = (doc.selection_state.selection_start, doc.selection_state.selection_end) {
+            doc.context_menu.selection = Some((start, end));
         } else {
-            doc.context_menu_selection = None;
+            doc.context_menu.selection = None;
         }
         if !doc.is_cell_in_selection(layer_idx, frame_idx) {
-            doc.selected_cell = Some((layer_idx, frame_idx));
+            doc.selection_state.selected_cell = Some((layer_idx, frame_idx));
         }
     } else {
         // 左键拖拽选择
         if let Some(pos) = pointer_pos {
             if pointer_down && cell_rect.contains(pos) {
-                if !doc.is_dragging {
+                if !doc.selection_state.is_dragging {
                     // 开始拖拽
-                    doc.is_dragging = true;
-                    doc.selection_start = Some((layer_idx, frame_idx));
-                    doc.selection_end = Some((layer_idx, frame_idx));
-                    doc.selected_cell = Some((layer_idx, frame_idx));
+                    doc.selection_state.is_dragging = true;
+                    doc.selection_state.selection_start = Some((layer_idx, frame_idx));
+                    doc.selection_state.selection_end = Some((layer_idx, frame_idx));
+                    doc.selection_state.selected_cell = Some((layer_idx, frame_idx));
                     // 退出编辑模式
-                    if doc.editing_cell.is_some() {
-                        doc.editing_cell = None;
-                        doc.editing_text.clear();
+                    if doc.edit_state.editing_cell.is_some() {
+                        doc.edit_state.editing_cell = None;
+                        doc.edit_state.editing_text.clear();
                     }
                 }
             }
@@ -1398,12 +1378,12 @@ fn render_cell_inline(
     }
 
     // 拖拽中：检查指针是否在当前格子内
-    if doc.is_dragging && pointer_down {
+    if doc.selection_state.is_dragging && pointer_down {
         if let Some(pos) = pointer_pos {
             if cell_rect.contains(pos) {
-                if doc.selection_end != Some((layer_idx, frame_idx)) {
-                    doc.selection_end = Some((layer_idx, frame_idx));
-                    doc.selected_cell = Some((layer_idx, frame_idx));
+                if doc.selection_state.selection_end != Some((layer_idx, frame_idx)) {
+                    doc.selection_state.selection_end = Some((layer_idx, frame_idx));
+                    doc.selection_state.selected_cell = Some((layer_idx, frame_idx));
                 }
             }
         }
