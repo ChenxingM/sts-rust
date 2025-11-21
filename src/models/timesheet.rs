@@ -98,8 +98,14 @@ impl TimeSheet {
     pub fn set_cell(&mut self, layer: usize, frame: usize, value: Option<CellValue>) {
         if let Some(layer_cells) = self.cells.get_mut(layer) {
             if frame >= layer_cells.len() {
-                // 扩展帧数
-                layer_cells.resize(frame + 1, None);
+                // 限制最大自动扩展大小，防止意外的大量内存分配
+                const MAX_AUTO_EXTEND: usize = 10000;
+                if frame < MAX_AUTO_EXTEND {
+                    layer_cells.resize(frame + 1, None);
+                } else {
+                    // 超出限制，忽略这个设置操作
+                    return;
+                }
             }
             layer_cells[frame] = value;
         }

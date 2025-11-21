@@ -1,9 +1,11 @@
-//! XDTS (Toonboom Digital Timesheet - Extended) format parser
+//! XDTS format parser
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use regex::Regex;
 use crate::models::timesheet::{TimeSheet, CellValue};
+use std::sync::OnceLock;
+
+static RE_NUM: OnceLock<regex::Regex> = OnceLock::new();
 
 #[derive(Debug, Deserialize)]
 struct XdtsRoot {
@@ -69,7 +71,7 @@ pub fn parse_xdts_file(path: &str) -> Result<Vec<TimeSheet>> {
         .with_context(|| "Failed to parse XDTS JSON")?;
 
     let mut timesheets = Vec::new();
-    let re_num = Regex::new(r"\d+$").unwrap();
+    let re_num = RE_NUM.get_or_init(|| regex::Regex::new(r"\d+$").unwrap());
 
     for time_table in root.time_tables {
         if time_table.fields.is_empty() {
@@ -94,6 +96,17 @@ pub fn parse_xdts_file(path: &str) -> Result<Vec<TimeSheet>> {
         if let Some(names) = names {
             let layer_count = tracks.len().max(names.len());
             let frame_count = time_table.duration;
+
+            // Safety: Limit maximum dimensions to prevent crashes
+            const MAX_LAYERS: usize = 1000;
+            const MAX_FRAMES: usize = 100000;
+
+            if layer_count > MAX_LAYERS {
+                anyhow::bail!("Too many layers in XDTS file: {} (max: {})", layer_count, MAX_LAYERS);
+            }
+            if frame_count > MAX_FRAMES {
+                anyhow::bail!("Too many frames in XDTS file: {} (max: {})", frame_count, MAX_FRAMES);
+            }
 
             let mut timesheet = TimeSheet::new(
                 name,
@@ -166,9 +179,16 @@ pub fn parse_xdts_file(path: &str) -> Result<Vec<TimeSheet>> {
                         frame_count
                     };
 
+                    // Safety: ensure valid range
+                    if start_frame >= frame_count || end_frame > frame_count || start_frame > end_frame {
+                        continue;
+                    }
+
                     // Fill from start_frame to end_frame (exclusive)
                     for frame_idx in start_frame..end_frame {
-                        timesheet.set_cell(layer_idx, frame_idx, value);
+                        if frame_idx < frame_count && layer_idx < layer_count {
+                            timesheet.set_cell(layer_idx, frame_idx, value);
+                        }
                     }
                 }
             }

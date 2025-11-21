@@ -61,6 +61,13 @@ impl StsApp {
 
     /// Load a file from the given path
     fn load_file_from_path(&mut self, path_str: &str) {
+        // 限制最大文档数量
+        const MAX_DOCUMENTS: usize = 100;
+        if self.documents.len() >= MAX_DOCUMENTS {
+            self.error_message = Some(format!("Too many documents open (max: {}). Please close some documents first.", MAX_DOCUMENTS));
+            return;
+        }
+
         // 检查文件是否已打开
         if let Some(_existing) = self.documents.iter().find(|d| {
             d.file_path.as_ref().map_or(false, |p| p.as_ref() == path_str)

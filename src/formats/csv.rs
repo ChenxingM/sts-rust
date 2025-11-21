@@ -66,13 +66,24 @@ pub fn parse_csv_file(path: &str) -> Result<TimeSheet> {
         anyhow::bail!("CSV file must have at least one layer column");
     }
 
+    // Determine frame count from data rows
+    let frame_count = data_rows.len();
+
+    // Safety: Limit maximum dimensions to prevent crashes
+    const MAX_LAYERS: usize = 1000;
+    const MAX_FRAMES: usize = 100000;
+
+    if layer_count > MAX_LAYERS {
+        anyhow::bail!("Too many layers in CSV file: {} (max: {})", layer_count, MAX_LAYERS);
+    }
+    if frame_count > MAX_FRAMES {
+        anyhow::bail!("Too many frames in CSV file: {} (max: {})", frame_count, MAX_FRAMES);
+    }
+
     // Extract layer names from first row (skip "Frame" column)
     let layer_names: Vec<String> = (1..layer_name_row.len())
         .map(|i| layer_name_row.get(i).unwrap_or("").to_string())
         .collect();
-
-    // Determine frame count from data rows
-    let frame_count = data_rows.len();
 
     let filename = Path::new(path)
         .file_name()

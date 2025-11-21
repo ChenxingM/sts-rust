@@ -1,4 +1,4 @@
-//! TDTS (Toonboom Digital Timesheet) format parser
+//! TDTS format parser
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -109,6 +109,17 @@ pub fn parse_tdts_file(path: &str) -> Result<Vec<TimeSheet>> {
                 let layer_count = tracks.len().max(names.len());
                 let frame_count = time_table.duration;
 
+                // Safety: Limit maximum dimensions to prevent crashes
+                const MAX_LAYERS: usize = 1000;
+                const MAX_FRAMES: usize = 100000;
+
+                if layer_count > MAX_LAYERS {
+                    anyhow::bail!("Too many layers in TDTS file: {} (max: {})", layer_count, MAX_LAYERS);
+                }
+                if frame_count > MAX_FRAMES {
+                    anyhow::bail!("Too many frames in TDTS file: {} (max: {})", frame_count, MAX_FRAMES);
+                }
+
                 let mut timesheet = TimeSheet::new(
                     name,
                     24, // Default framerate
@@ -165,9 +176,16 @@ pub fn parse_tdts_file(path: &str) -> Result<Vec<TimeSheet>> {
                             frame_count
                         };
 
+                        // Safety: ensure valid range
+                        if start_frame >= frame_count || end_frame > frame_count || start_frame > end_frame {
+                            continue;
+                        }
+
                         // Fill from start_frame to end_frame (exclusive)
                         for frame_idx in start_frame..end_frame {
-                            timesheet.set_cell(layer_idx, frame_idx, value);
+                            if frame_idx < frame_count && layer_idx < layer_count {
+                                timesheet.set_cell(layer_idx, frame_idx, value);
+                            }
                         }
                     }
                 }
