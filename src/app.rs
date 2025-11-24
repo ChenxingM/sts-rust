@@ -148,6 +148,33 @@ impl StsApp {
                     }
                 }
             }
+            "sxf" => {
+                // Use new SXF parser that handles multi-section format
+                match sts_rust::parse_sxf_groups(path_str) {
+                    Ok(groups) => {
+                        // Convert groups to TimeSheet for display
+                        let filename = std::path::Path::new(path_str)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("untitled");
+
+                        match sts_rust::groups_to_timesheet(&groups, filename) {
+                            Ok(ts) => {
+                                let doc = Document::new(self.next_doc_id, ts, None);
+                                self.next_doc_id += 1;
+                                self.documents.push(doc);
+                                self.error_message = None;
+                            }
+                            Err(e) => {
+                                self.error_message = Some(format!("Failed to convert SXF: {}", e));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.error_message = Some(format!("Failed to open SXF: {}", e));
+                    }
+                }
+            }
             _ => {
                 self.error_message = Some(format!("Unsupported file type: {}", extension));
             }
@@ -156,11 +183,12 @@ impl StsApp {
 
     pub fn open_document(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("All Supported", &["sts", "xdts", "tdts", "csv"])
+            .add_filter("All Supported", &["sts", "xdts", "tdts", "csv", "sxf"])
             .add_filter("STS Files", &["sts"])
             .add_filter("XDTS Files", &["xdts"])
             .add_filter("TDTS Files", &["tdts"])
             .add_filter("CSV Files", &["csv"])
+            .add_filter("SXF Files", &["sxf"])
             .pick_file()
         {
             let path_str = path.to_str().unwrap();
@@ -193,6 +221,26 @@ impl StsApp {
                     self.error_message = Some(e);
                 } else {
                     self.error_message = None;
+                }
+            }
+        }
+    }
+
+    pub fn export_to_csv(&mut self, doc_id: usize) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("CSV Files", &["csv"])
+            .set_file_name("export.csv")
+            .save_file()
+        {
+            let path_str = path.to_str().unwrap();
+            if let Some(doc) = self.documents.iter().find(|d| d.id == doc_id) {
+                match sts_rust::write_csv_file(&doc.timesheet, path_str) {
+                    Ok(_) => {
+                        self.error_message = Some(format!("Exported to CSV: {}", path_str));
+                    }
+                    Err(e) => {
+                        self.error_message = Some(format!("Failed to export CSV: {}", e));
+                    }
                 }
             }
         }
@@ -390,6 +438,10 @@ impl eframe::App for StsApp {
                                 }
                                 if ui.button("Save As...").clicked() {
                                     docs_to_save_as.push(doc_id_val);
+                                }
+                                ui.separator();
+                                if ui.button("Export CSV...").clicked() {
+                                    self.export_to_csv(doc_id_val);
                                 }
                             });
 

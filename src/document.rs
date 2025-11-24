@@ -8,7 +8,7 @@ use sts_rust::models::timesheet::CellValue;
 // 撤销栈限制
 pub const MAX_UNDO_ACTIONS: usize = 100;
 
-// 撤销操作类型 - 使用 Rc 共享数据以减少内存使用
+// 撤销操作类型
 #[derive(Clone)]
 pub enum UndoAction {
     SetCell {
@@ -19,12 +19,11 @@ pub enum UndoAction {
     SetRange {
         min_layer: usize,
         min_frame: usize,
-        // 使用 Rc 共享不变数据，避免深拷贝
         old_values: Rc<Vec<Vec<Option<CellValue>>>>,
     },
 }
 
-// 编辑状态 - 使用更紧凑的字符串存储
+// 编辑状态
 pub struct EditState {
     pub editing_cell: Option<(usize, usize)>,
     pub editing_layer_name: Option<usize>,
@@ -83,14 +82,12 @@ impl Default for ContextMenuState {
     }
 }
 
-// 剪贴板数据 - 使用 Rc 共享以避免大量复制
+// 剪贴板数据
 pub type ClipboardData = Rc<Vec<Vec<Option<CellValue>>>>;
 
-// 文档结构 - 每个打开的文件对应一个Document
-// 使用 Box 优化大型字段的内存布局
+// 文档结构
 pub struct Document {
     pub id: usize,
-    // TimeSheet 可能很大，使用 Box 减少栈上大小
     pub timesheet: Box<TimeSheet>,
     pub file_path: Option<Box<str>>,
     pub is_modified: bool,
@@ -99,7 +96,6 @@ pub struct Document {
     pub selection_state: SelectionState,
     pub context_menu: ContextMenuState,
     pub clipboard: Option<ClipboardData>,
-    // 使用 Box 减少 Vec 的栈大小
     pub undo_stack: Box<Vec<UndoAction>>,
 }
 
@@ -281,7 +277,6 @@ impl Document {
             }
 
             if !clipboard_data.is_empty() {
-                // 使用 Rc 共享数据，避免克隆
                 self.clipboard = Some(Rc::new(clipboard_data));
                 ctx.output_mut(|o| o.copied_text = clipboard_text);
             }
@@ -386,7 +381,6 @@ impl Document {
                     self.timesheet.set_cell(layer, frame, old_value);
                 }
                 UndoAction::SetRange { min_layer, min_frame, old_values } => {
-                    // Rc 解引用不会复制数据
                     for (layer_offset, row) in old_values.iter().enumerate() {
                         for (frame_offset, value) in row.iter().enumerate() {
                             self.timesheet.set_cell(

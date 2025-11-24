@@ -5,7 +5,7 @@ use crate::models::timesheet::{TimeSheet, CellValue};
 use std::path::Path;
 
 /// Try to decode bytes with multiple encodings
-fn decode_with_fallback(bytes: &[u8]) -> Result<String> {
+pub(crate) fn decode_with_fallback(bytes: &[u8]) -> Result<String> {
     // Try encodings in order: UTF-8, GBK (GB2312), Shift-JIS
     let encodings = [
         encoding_rs::UTF_8,
@@ -140,4 +140,41 @@ pub fn parse_csv_file(path: &str) -> Result<TimeSheet> {
     }
 
     Ok(timesheet)
+}
+
+/// Write TimeSheet to CSV file
+pub fn write_csv_file(timesheet: &TimeSheet, path: &str) -> Result<()> {
+    let mut writer = csv::Writer::from_path(path)
+        .with_context(|| format!("Failed to create CSV file: {}", path))?;
+
+    // Write first row: layer names
+    let mut header_row = vec!["Frame".to_string()];
+    for layer_name in &timesheet.layer_names {
+        header_row.push(layer_name.clone());
+    }
+    writer.write_record(&header_row)
+        .with_context(|| "Failed to write CSV header")?;
+
+    // Write data rows
+    let frame_count = timesheet.total_frames();
+    for frame_idx in 0..frame_count {
+        let mut row = vec![(frame_idx + 1).to_string()]; // Frame numbers are 1-indexed
+
+        for layer_idx in 0..timesheet.layer_count {
+            let cell_str = match timesheet.get_cell(layer_idx, frame_idx) {
+                Some(CellValue::Number(n)) => n.to_string(),
+                Some(CellValue::Same) => "-".to_string(),
+                None => "".to_string(),
+            };
+            row.push(cell_str);
+        }
+
+        writer.write_record(&row)
+            .with_context(|| format!("Failed to write CSV row {}", frame_idx + 1))?;
+    }
+
+    writer.flush()
+        .with_context(|| "Failed to flush CSV file")?;
+
+    Ok(())
 }

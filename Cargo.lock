@@ -2337,6 +2337,7 @@ dependencies = [
  "encoding_rs",
  "image",
  "itoa",
+ "percent-encoding",
  "pretty_assertions",
  "regex",
  "rfd",
