@@ -142,39 +142,105 @@ pub fn parse_csv_file(path: &str) -> Result<TimeSheet> {
     Ok(timesheet)
 }
 
-/// Write TimeSheet to CSV file
-pub fn write_csv_file(timesheet: &TimeSheet, path: &str) -> Result<()> {
-    let mut writer = csv::Writer::from_path(path)
-        .with_context(|| format!("Failed to create CSV file: {}", path))?;
+/// CSV export encoding options
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsvEncoding {
+    Utf8,
+    Gb2312,
+    ShiftJis,
+}
 
-    // Write first row: layer names
-    let mut header_row = vec!["Frame".to_string()];
-    for layer_name in &timesheet.layer_names {
-        header_row.push(layer_name.clone());
+impl CsvEncoding {
+    pub fn encode(&self, s: &str) -> Vec<u8> {
+        match self {
+            CsvEncoding::Utf8 => s.as_bytes().to_vec(),
+            CsvEncoding::Gb2312 => {
+                let (encoded, _, _) = encoding_rs::GBK.encode(s);
+                encoded.into_owned()
+            }
+            CsvEncoding::ShiftJis => {
+                let (encoded, _, _) = encoding_rs::SHIFT_JIS.encode(s);
+                encoded.into_owned()
+            }
+        }
     }
-    writer.write_record(&header_row)
-        .with_context(|| "Failed to write CSV header")?;
+}
 
-    // Write data rows
+/// Write TimeSheet to CSV file with custom header and encoding
+/// Only outputs keyframes (when value changes), uses "×" for transition to empty
+pub fn write_csv_file_with_options(
+    timesheet: &TimeSheet,
+    path: &str,
+    header_name: &str,
+    encoding: CsvEncoding,
+) -> Result<()> {
+    use std::io::Write;
+
+    let mut csv_content = String::new();
+
+    // First row: Frame, header_name, empty cells...
+    csv_content.push_str("Frame,");
+    csv_content.push_str(header_name);
+    for _ in 1..timesheet.layer_count {
+        csv_content.push(',');
+    }
+    csv_content.push('\n');
+
+    // Second row: empty, layer names...
+    csv_content.push(',');
+    for (i, layer_name) in timesheet.layer_names.iter().enumerate() {
+        csv_content.push_str(layer_name);
+        if i < timesheet.layer_count - 1 {
+            csv_content.push(',');
+        }
+    }
+    csv_content.push('\n');
+
+    // Track previous actual values for each layer
+    let mut prev_values: Vec<Option<u32>> = vec![None; timesheet.layer_count];
+
+    // Data rows
     let frame_count = timesheet.total_frames();
     for frame_idx in 0..frame_count {
-        let mut row = vec![(frame_idx + 1).to_string()]; // Frame numbers are 1-indexed
+        // Frame number (1-indexed)
+        csv_content.push_str(&(frame_idx + 1).to_string());
 
         for layer_idx in 0..timesheet.layer_count {
-            let cell_str = match timesheet.get_cell(layer_idx, frame_idx) {
-                Some(CellValue::Number(n)) => n.to_string(),
-                Some(CellValue::Same) => "-".to_string(),
-                None => "".to_string(),
-            };
-            row.push(cell_str);
-        }
+            csv_content.push(',');
 
-        writer.write_record(&row)
-            .with_context(|| format!("Failed to write CSV row {}", frame_idx + 1))?;
+            // Get the actual value for this cell
+            let current_value = timesheet.get_actual_value(layer_idx, frame_idx);
+            let prev_value = prev_values[layer_idx];
+
+            if current_value != prev_value {
+                // Value changed - output it
+                match current_value {
+                    Some(n) => csv_content.push_str(&n.to_string()),
+                    None => {
+                        // Changed from having a value to no value - output ×
+                        if prev_value.is_some() {
+                            csv_content.push('×');
+                        }
+                    }
+                }
+                prev_values[layer_idx] = current_value;
+            }
+            // If value is the same as previous, output nothing (empty)
+        }
+        csv_content.push('\n');
     }
 
-    writer.flush()
-        .with_context(|| "Failed to flush CSV file")?;
+    // Encode and write to file
+    let encoded_bytes = encoding.encode(&csv_content);
+    let mut file = std::fs::File::create(path)
+        .with_context(|| format!("Failed to create CSV file: {}", path))?;
+    file.write_all(&encoded_bytes)
+        .with_context(|| "Failed to write CSV file")?;
 
     Ok(())
+}
+
+/// Write TimeSheet to CSV file (legacy function for compatibility)
+pub fn write_csv_file(timesheet: &TimeSheet, path: &str) -> Result<()> {
+    write_csv_file_with_options(timesheet, path, "动画", CsvEncoding::Gb2312)
 }

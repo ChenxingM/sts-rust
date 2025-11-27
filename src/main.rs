@@ -4,6 +4,7 @@
 mod document;
 mod app;
 mod ui;
+pub mod settings;
 
 use app::StsApp;
 

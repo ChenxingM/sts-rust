@@ -477,22 +477,23 @@ impl Document {
         let total_frames = self.timesheet.total_frames();
         let insert_start = end_frame + 1;
 
-        // 计算需要重复的次数
-        let actual_repeat_count = if repeat_until_end {
-            let remaining = total_frames.saturating_sub(insert_start);
-            (remaining / selection_len).max(1) as u32
-        } else {
-            repeat_count
-        };
+        // 计算可用的帧数
+        let available_frames = total_frames.saturating_sub(insert_start);
+        if available_frames == 0 {
+            return Err("No frames available to repeat into");
+        }
 
         // 计算需要写入的总帧数
-        let total_write_frames = selection_len * actual_repeat_count as usize;
-        let write_end = insert_start + total_write_frames;
+        let total_write_frames = if repeat_until_end {
+            // 填满所有剩余帧（包括不完整的组）
+            available_frames
+        } else {
+            // 尝试写入 repeat_count 组，但不超过可用帧数
+            let requested_frames = selection_len * repeat_count as usize;
+            requested_frames.min(available_frames)
+        };
 
-        // 检查是否超出范围
-        if write_end > total_frames {
-            return Err("Not enough frames to repeat");
-        }
+        let write_end = insert_start + total_write_frames;
 
         // 保存旧值用于撤销
         let mut old_values = Vec::new();
@@ -509,14 +510,15 @@ impl Document {
         });
         self.is_modified = true;
 
-        // 写入重复的值
+        // 写入重复的值（循环写入source_values直到填满）
         let mut write_frame = insert_start;
-        for _ in 0..actual_repeat_count {
+        while write_frame < write_end {
             for value in &source_values {
-                if write_frame < total_frames {
-                    self.timesheet.set_cell(layer, write_frame, *value);
-                    write_frame += 1;
+                if write_frame >= write_end {
+                    break;
                 }
+                self.timesheet.set_cell(layer, write_frame, *value);
+                write_frame += 1;
             }
         }
 

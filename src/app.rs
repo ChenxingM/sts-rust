@@ -4,6 +4,7 @@ use eframe::egui;
 use std::rc::Rc;
 use crate::document::Document;
 use crate::ui::render_cell;
+use crate::settings::{ExportSettings, CsvEncoding};
 use sts_rust::TimeSheet;
 use sts_rust::models::timesheet::CellValue;
 
@@ -23,10 +24,21 @@ pub struct StsApp {
     // 应用程序关闭状态
     pub show_exit_dialog: bool,
     pub allowed_to_close: bool,
+    // 导出设置
+    pub export_settings: ExportSettings,
+    pub show_settings_dialog: bool,
+    pub temp_csv_header_name: String,
+    pub temp_csv_encoding: usize, // 0: UTF-8, 1: GB2312, 2: Shift-JIS
 }
 
 impl Default for StsApp {
     fn default() -> Self {
+        let export_settings = ExportSettings::load_from_registry();
+        let temp_encoding = match export_settings.csv_encoding {
+            CsvEncoding::Utf8 => 0,
+            CsvEncoding::Gb2312 => 1,
+            CsvEncoding::ShiftJis => 2,
+        };
         Self {
             documents: Vec::new(),
             next_doc_id: 0,
@@ -42,6 +54,10 @@ impl Default for StsApp {
             error_message: None,
             show_exit_dialog: false,
             allowed_to_close: false,
+            temp_csv_header_name: export_settings.csv_header_name.clone(),
+            temp_csv_encoding: temp_encoding,
+            export_settings,
+            show_settings_dialog: false,
         }
     }
 }
@@ -238,14 +254,31 @@ impl StsApp {
     }
 
     pub fn export_to_csv(&mut self, doc_id: usize) {
+        let default_name = self.documents.iter()
+            .find(|d| d.id == doc_id)
+            .map(|d| format!("{}.csv", d.timesheet.name))
+            .unwrap_or_else(|| "export.csv".to_string());
+
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("CSV Files", &["csv"])
-            .set_file_name("export.csv")
+            .set_file_name(&default_name)
             .save_file()
         {
             let path_str = path.to_str().unwrap();
             if let Some(doc) = self.documents.iter().find(|d| d.id == doc_id) {
-                match sts_rust::write_csv_file(&doc.timesheet, path_str) {
+                // Convert encoding index to CsvEncoding
+                let encoding = match self.export_settings.csv_encoding {
+                    CsvEncoding::Utf8 => sts_rust::CsvEncoding::Utf8,
+                    CsvEncoding::Gb2312 => sts_rust::CsvEncoding::Gb2312,
+                    CsvEncoding::ShiftJis => sts_rust::CsvEncoding::ShiftJis,
+                };
+
+                match sts_rust::write_csv_file_with_options(
+                    &doc.timesheet,
+                    path_str,
+                    &self.export_settings.csv_header_name,
+                    encoding,
+                ) {
                     Ok(_) => {
                         self.error_message = Some(format!("Exported to CSV: {}", path_str));
                     }
@@ -412,8 +445,108 @@ impl eframe::App for StsApp {
                         ui.close_menu();
                     }
                 });
+
+                ui.menu_button("Edit", |ui| {
+                    if ui.button("Settings...").clicked() {
+                        // 初始化临时设置值
+                        self.temp_csv_header_name = self.export_settings.csv_header_name.clone();
+                        self.temp_csv_encoding = match self.export_settings.csv_encoding {
+                            CsvEncoding::Utf8 => 0,
+                            CsvEncoding::Gb2312 => 1,
+                            CsvEncoding::ShiftJis => 2,
+                        };
+                        self.show_settings_dialog = true;
+                        ui.close_menu();
+                    }
+                });
             });
         });
+
+        // 设置对话框
+        if self.show_settings_dialog {
+            egui::Area::new(egui::Id::new("settings_modal_dimmer"))
+                .fixed_pos(egui::pos2(0.0, 0.0))
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    let screen_rect = ctx.screen_rect();
+                    ui.painter().rect_filled(
+                        screen_rect,
+                        0.0,
+                        egui::Color32::from_rgba_premultiplied(0, 0, 0, 150),
+                    );
+                });
+
+            let mut should_save = false;
+            let mut should_cancel = false;
+
+            egui::Window::new("Settings")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    ui.heading("CSV Export");
+                    ui.add_space(5.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("Header name:");
+                        ui.text_edit_singleline(&mut self.temp_csv_header_name);
+                    });
+
+                    ui.add_space(5.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("Encoding:");
+                        egui::ComboBox::from_id_salt("csv_encoding")
+                            .selected_text(match self.temp_csv_encoding {
+                                0 => "UTF-8",
+                                1 => "GB2312",
+                                2 => "Shift-JIS",
+                                _ => "GB2312",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.temp_csv_encoding, 0, "UTF-8");
+                                ui.selectable_value(&mut self.temp_csv_encoding, 1, "GB2312");
+                                ui.selectable_value(&mut self.temp_csv_encoding, 2, "Shift-JIS");
+                            });
+                    });
+
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(5.0);
+
+                    let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    ui.horizontal(|ui| {
+                        if ui.button("OK").clicked() || enter_pressed {
+                            should_save = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            should_cancel = true;
+                        }
+                    });
+                });
+
+            if should_save {
+                // 更新设置
+                self.export_settings.csv_header_name = self.temp_csv_header_name.clone();
+                self.export_settings.csv_encoding = match self.temp_csv_encoding {
+                    0 => CsvEncoding::Utf8,
+                    2 => CsvEncoding::ShiftJis,
+                    _ => CsvEncoding::Gb2312,
+                };
+
+                // 保存到注册表
+                if let Err(e) = self.export_settings.save_to_registry() {
+                    self.error_message = Some(format!("Failed to save settings: {}", e));
+                }
+
+                self.show_settings_dialog = false;
+            }
+
+            if should_cancel {
+                self.show_settings_dialog = false;
+            }
+        }
 
         // 新建对话框
         if self.show_new_dialog {
