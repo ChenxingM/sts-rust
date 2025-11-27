@@ -3,7 +3,7 @@
 use eframe::egui;
 use std::rc::Rc;
 use crate::document::Document;
-use crate::ui::render_cell;
+use crate::ui::{render_cell, AboutDialog};
 use crate::settings::{ExportSettings, CsvEncoding};
 use sts_rust::TimeSheet;
 use sts_rust::models::timesheet::CellValue;
@@ -29,6 +29,8 @@ pub struct StsApp {
     pub show_settings_dialog: bool,
     pub temp_csv_header_name: String,
     pub temp_csv_encoding: usize, // 0: UTF-8, 1: GB2312, 2: Shift-JIS
+    // 关于对话框
+    pub about_dialog: AboutDialog,
 }
 
 impl Default for StsApp {
@@ -58,6 +60,7 @@ impl Default for StsApp {
             temp_csv_encoding: temp_encoding,
             export_settings,
             show_settings_dialog: false,
+            about_dialog: AboutDialog::default(),
         }
     }
 }
@@ -459,6 +462,13 @@ impl eframe::App for StsApp {
                         ui.close_menu();
                     }
                 });
+
+                ui.menu_button("Help", |ui| {
+                    if ui.button("About STS...").clicked() {
+                        self.about_dialog.open = true;
+                        ui.close_menu();
+                    }
+                });
             });
         });
 
@@ -547,6 +557,9 @@ impl eframe::App for StsApp {
                 self.show_settings_dialog = false;
             }
         }
+
+        // 关于对话框
+        self.about_dialog.show(ctx);
 
         // 新建对话框
         if self.show_new_dialog {
