@@ -3,6 +3,8 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use crate::models::timesheet::{TimeSheet, CellValue};
+use crate::limits::{MAX_LAYERS, MAX_FRAMES};
+use super::fill_keyframes;
 
 #[derive(Debug, Deserialize)]
 struct TdtsRoot {
@@ -89,11 +91,11 @@ pub fn parse_tdts_file(path: &str) -> Result<Vec<TimeSheet>> {
                 continue;
             }
 
-            let name = format!("{}->{}->{}",
-                std::path::Path::new(path).file_name().unwrap().to_string_lossy(),
-                cut_name,
-                time_table.name
-            );
+            let file_name = std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("untitled");
+            let name = format!("{}->{}->{}", file_name, cut_name, time_table.name);
 
             // Find field with fieldId = 4
             let tracks = time_table.fields.iter()
@@ -108,10 +110,6 @@ pub fn parse_tdts_file(path: &str) -> Result<Vec<TimeSheet>> {
             if let (Some(tracks), Some(names)) = (tracks, names) {
                 let layer_count = tracks.len().max(names.len());
                 let frame_count = time_table.duration;
-
-                // Safety: Limit maximum dimensions to prevent crashes
-                const MAX_LAYERS: usize = 1000;
-                const MAX_FRAMES: usize = 100000;
 
                 if layer_count > MAX_LAYERS {
                     anyhow::bail!("Too many layers in TDTS file: {} (max: {})", layer_count, MAX_LAYERS);
@@ -164,30 +162,9 @@ pub fn parse_tdts_file(path: &str) -> Result<Vec<TimeSheet>> {
                         }
                     }
 
-                    // Sort by frame index
+                    // Sort by frame index and fill
                     keyframes.sort_by_key(|k| k.0);
-
-                    // Fill all frames between keyframes
-                    for i in 0..keyframes.len() {
-                        let (start_frame, value) = keyframes[i];
-                        let end_frame = if i + 1 < keyframes.len() {
-                            keyframes[i + 1].0
-                        } else {
-                            frame_count
-                        };
-
-                        // Safety: ensure valid range
-                        if start_frame >= frame_count || end_frame > frame_count || start_frame > end_frame {
-                            continue;
-                        }
-
-                        // Fill from start_frame to end_frame (exclusive)
-                        for frame_idx in start_frame..end_frame {
-                            if frame_idx < frame_count && layer_idx < layer_count {
-                                timesheet.set_cell(layer_idx, frame_idx, value);
-                            }
-                        }
-                    }
+                    fill_keyframes(&mut timesheet, layer_idx, &keyframes, frame_count);
                 }
 
                 timesheets.push(timesheet);

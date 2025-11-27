@@ -27,10 +27,6 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # Windows registry support
 winreg = { version = "0.52", optional = true }
 
-# Memory optimization dependencies
-smallvec = { version = "1.11", default-features = false }
-ahash = { version = "0.8", default-features = false }
-
 [dev-dependencies]
 pretty_assertions = "1.4"
 tempfile = "3.8"

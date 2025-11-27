@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use crate::models::timesheet::{TimeSheet, CellValue};
+use crate::limits::{MAX_LAYERS, MAX_FRAMES};
 use std::path::Path;
 
 /// Try to decode bytes with multiple encodings
@@ -68,10 +69,6 @@ pub fn parse_csv_file(path: &str) -> Result<TimeSheet> {
 
     // Determine frame count from data rows
     let frame_count = data_rows.len();
-
-    // Safety: Limit maximum dimensions to prevent crashes
-    const MAX_LAYERS: usize = 1000;
-    const MAX_FRAMES: usize = 100000;
 
     if layer_count > MAX_LAYERS {
         anyhow::bail!("Too many layers in CSV file: {} (max: {})", layer_count, MAX_LAYERS);
@@ -143,22 +140,39 @@ pub fn parse_csv_file(path: &str) -> Result<TimeSheet> {
 }
 
 /// CSV export encoding options
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CsvEncoding {
     Utf8,
+    #[default]
     Gb2312,
     ShiftJis,
 }
 
 impl CsvEncoding {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Utf8 => "UTF-8",
+            Self::Gb2312 => "GB2312",
+            Self::ShiftJis => "Shift-JIS",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "UTF-8" => Self::Utf8,
+            "Shift-JIS" => Self::ShiftJis,
+            _ => Self::Gb2312,
+        }
+    }
+
     pub fn encode(&self, s: &str) -> Vec<u8> {
         match self {
-            CsvEncoding::Utf8 => s.as_bytes().to_vec(),
-            CsvEncoding::Gb2312 => {
+            Self::Utf8 => s.as_bytes().to_vec(),
+            Self::Gb2312 => {
                 let (encoded, _, _) = encoding_rs::GBK.encode(s);
                 encoded.into_owned()
             }
-            CsvEncoding::ShiftJis => {
+            Self::ShiftJis => {
                 let (encoded, _, _) = encoding_rs::SHIFT_JIS.encode(s);
                 encoded.into_owned()
             }

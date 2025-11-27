@@ -1,7 +1,15 @@
 pub mod models;
 pub mod formats;
 
-// 重新导出常用类型
+/// Shared constants for resource limits
+pub mod limits {
+    /// Maximum number of layers allowed in a timesheet
+    pub const MAX_LAYERS: usize = 1000;
+    /// Maximum number of frames allowed in a timesheet
+    pub const MAX_FRAMES: usize = 100_000;
+}
+
+// Re-export commonly used types
 pub use models::{TimeSheet, Layer};
 pub use models::timesheet::CellValue;
 pub use formats::{
@@ -11,5 +19,5 @@ pub use formats::{
     parse_csv_file, write_csv_file, write_csv_file_with_options,
     parse_sxf_file, parse_sxf_binary,
     parse_sxf_groups, write_groups_to_csv, groups_to_timesheet,
-    CsvEncoding,
+    fill_keyframes, CsvEncoding,
 };

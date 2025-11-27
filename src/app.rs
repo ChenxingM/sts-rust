@@ -2,6 +2,7 @@
 
 use eframe::egui;
 use std::rc::Rc;
+use std::sync::OnceLock;
 use crate::document::Document;
 use crate::ui::{render_cell, AboutDialog};
 use crate::settings::{ExportSettings, CsvEncoding};
@@ -269,18 +270,11 @@ impl StsApp {
         {
             let path_str = path.to_str().unwrap();
             if let Some(doc) = self.documents.iter().find(|d| d.id == doc_id) {
-                // Convert encoding index to CsvEncoding
-                let encoding = match self.export_settings.csv_encoding {
-                    CsvEncoding::Utf8 => sts_rust::CsvEncoding::Utf8,
-                    CsvEncoding::Gb2312 => sts_rust::CsvEncoding::Gb2312,
-                    CsvEncoding::ShiftJis => sts_rust::CsvEncoding::ShiftJis,
-                };
-
                 match sts_rust::write_csv_file_with_options(
                     &doc.timesheet,
                     path_str,
                     &self.export_settings.csv_header_name,
-                    encoding,
+                    self.export_settings.csv_encoding,
                 ) {
                     Ok(_) => {
                         self.error_message = Some(format!("Exported to CSV: {}", path_str));
@@ -296,22 +290,18 @@ impl StsApp {
 impl eframe::App for StsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // 只在首次设置视觉样式
-        static mut STYLE_INITIALIZED: bool = false;
-        unsafe {
-            if !STYLE_INITIALIZED {
-                ctx.set_visuals(egui::Visuals::light());
+        static STYLE_INIT: OnceLock<()> = OnceLock::new();
+        STYLE_INIT.get_or_init(|| {
+            ctx.set_visuals(egui::Visuals::light());
 
-                let mut style = (*ctx.style()).clone();
-                style.spacing.window_margin = egui::Margin::same(4.0);
-                style.text_styles.insert(
-                    egui::TextStyle::Heading,
-                    egui::FontId::proportional(14.0),
-                );
-                ctx.set_style(style);
-
-                STYLE_INITIALIZED = true;
-            }
-        }
+            let mut style = (*ctx.style()).clone();
+            style.spacing.window_margin = egui::Margin::same(4.0);
+            style.text_styles.insert(
+                egui::TextStyle::Heading,
+                egui::FontId::proportional(14.0),
+            );
+            ctx.set_style(style);
+        });
 
         // 检测窗口关闭请求
         if ctx.input(|i| i.viewport().close_requested()) {

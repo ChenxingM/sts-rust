@@ -1,6 +1,7 @@
 //! Document module - handles individual document state and operations
 
 use eframe::egui;
+use std::collections::VecDeque;
 use std::rc::Rc;
 use sts_rust::TimeSheet;
 use sts_rust::models::timesheet::CellValue;
@@ -119,7 +120,7 @@ pub struct Document {
     pub selection_state: SelectionState,
     pub context_menu: ContextMenuState,
     pub clipboard: Option<ClipboardData>,
-    pub undo_stack: Box<Vec<UndoAction>>,
+    pub undo_stack: VecDeque<UndoAction>,
     pub repeat_dialog: RepeatDialogState,
 }
 
@@ -135,7 +136,7 @@ impl Document {
             selection_state: SelectionState::default(),
             context_menu: ContextMenuState::default(),
             clipboard: None,
-            undo_stack: Box::new(Vec::new()),
+            undo_stack: VecDeque::with_capacity(MAX_UNDO_ACTIONS),
             repeat_dialog: RepeatDialogState::default(),
         }
     }
@@ -324,7 +325,7 @@ impl Document {
                 old_values.push(old_row);
             }
 
-            self.undo_stack.push(UndoAction::SetRange {
+            self.undo_stack.push_back(UndoAction::SetRange {
                 min_layer,
                 min_frame,
                 old_values: Rc::new(old_values),
@@ -350,7 +351,7 @@ impl Document {
                 old_values.push(old_row);
             }
 
-            self.undo_stack.push(UndoAction::SetRange {
+            self.undo_stack.push_back(UndoAction::SetRange {
                 min_layer,
                 min_frame,
                 old_values: Rc::new(old_values),
@@ -384,7 +385,7 @@ impl Document {
                     old_values.push(old_row);
                 }
 
-                self.undo_stack.push(UndoAction::SetRange {
+                self.undo_stack.push_back(UndoAction::SetRange {
                     min_layer: start_layer,
                     min_frame: start_frame,
                     old_values: Rc::new(old_values),
@@ -403,7 +404,7 @@ impl Document {
     }
 
     pub fn undo(&mut self) {
-        if let Some(action) = self.undo_stack.pop() {
+        if let Some(action) = self.undo_stack.pop_back() {
             match action {
                 UndoAction::SetCell { layer, frame, old_value } => {
                     self.timesheet.set_cell(layer, frame, old_value);
@@ -428,9 +429,9 @@ impl Document {
     pub fn push_undo_set_cell(&mut self, layer: usize, frame: usize, old_value: Option<CellValue>) {
         // 限制撤销栈大小
         if self.undo_stack.len() >= MAX_UNDO_ACTIONS {
-            self.undo_stack.remove(0);
+            self.undo_stack.pop_front();
         }
-        self.undo_stack.push(UndoAction::SetCell {
+        self.undo_stack.push_back(UndoAction::SetCell {
             layer,
             frame,
             old_value,
@@ -503,7 +504,7 @@ impl Document {
         }
         old_values.push(old_row);
 
-        self.undo_stack.push(UndoAction::SetRange {
+        self.undo_stack.push_back(UndoAction::SetRange {
             min_layer: layer,
             min_frame: insert_start,
             old_values: Rc::new(old_values),
@@ -577,7 +578,7 @@ impl Document {
         }
         old_values.push(old_row);
 
-        self.undo_stack.push(UndoAction::SetRange {
+        self.undo_stack.push_back(UndoAction::SetRange {
             min_layer: layer,
             min_frame: insert_start,
             old_values: Rc::new(old_values),

@@ -5,45 +5,8 @@ use winreg::enums::*;
 #[cfg(feature = "winreg")]
 use winreg::RegKey;
 
-/// CSV export encoding options
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CsvEncoding {
-    Utf8,
-    Gb2312,
-    ShiftJis,
-}
-
-impl CsvEncoding {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            CsvEncoding::Utf8 => "UTF-8",
-            CsvEncoding::Gb2312 => "GB2312",
-            CsvEncoding::ShiftJis => "Shift-JIS",
-        }
-    }
-
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "UTF-8" => CsvEncoding::Utf8,
-            "Shift-JIS" => CsvEncoding::ShiftJis,
-            _ => CsvEncoding::Gb2312,
-        }
-    }
-
-    pub fn encode(&self, s: &str) -> Vec<u8> {
-        match self {
-            CsvEncoding::Utf8 => s.as_bytes().to_vec(),
-            CsvEncoding::Gb2312 => {
-                let (encoded, _, _) = encoding_rs::GBK.encode(s);
-                encoded.into_owned()
-            }
-            CsvEncoding::ShiftJis => {
-                let (encoded, _, _) = encoding_rs::SHIFT_JIS.encode(s);
-                encoded.into_owned()
-            }
-        }
-    }
-}
+// Re-export CsvEncoding from library
+pub use sts_rust::CsvEncoding;
 
 /// Export settings
 #[derive(Debug, Clone)]

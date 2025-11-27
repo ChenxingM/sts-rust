@@ -19,3 +19,24 @@ pub use sxf::{
     LayerGroup,
     LayerData,
 };
+
+use crate::models::timesheet::{TimeSheet, CellValue};
+
+/// Fill keyframes into a timesheet layer
+/// Each keyframe holds its value until the next keyframe
+pub fn fill_keyframes(
+    timesheet: &mut TimeSheet,
+    layer_idx: usize,
+    keyframes: &[(usize, Option<CellValue>)],
+    frame_count: usize,
+) {
+    for i in 0..keyframes.len() {
+        let (start_frame, value) = keyframes[i];
+        let end_frame = keyframes.get(i + 1).map(|(f, _)| *f).unwrap_or(frame_count);
+        for frame_idx in start_frame..end_frame {
+            if frame_idx < frame_count {
+                timesheet.set_cell(layer_idx, frame_idx, value);
+            }
+        }
+    }
+}
