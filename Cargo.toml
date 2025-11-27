@@ -24,6 +24,9 @@ percent-encoding = "2.3"
 
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+# Windows registry support
+winreg = { version = "0.52", optional = true }
+
 # Memory optimization dependencies
 smallvec = { version = "1.11", default-features = false }
 ahash = { version = "0.8", default-features = false }
@@ -34,7 +37,7 @@ tempfile = "3.8"
 
 [features]
 default = ["gui-egui"]
-gui-egui = ["eframe", "egui", "rfd"]
+gui-egui = ["eframe", "egui", "rfd", "winreg"]
 # gui-iced = ["iced", "rfd"]
 
 [[bin]]

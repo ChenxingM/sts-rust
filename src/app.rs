@@ -20,6 +20,9 @@ pub struct StsApp {
     pub new_seconds: u32,
     pub new_frames: u32,
     pub error_message: Option<String>,
+    // 应用程序关闭状态
+    pub show_exit_dialog: bool,
+    pub allowed_to_close: bool,
 }
 
 impl Default for StsApp {
@@ -37,6 +40,8 @@ impl Default for StsApp {
             new_seconds: 6,
             new_frames: 0,
             error_message: None,
+            show_exit_dialog: false,
+            allowed_to_close: false,
         }
     }
 }
@@ -211,8 +216,14 @@ impl StsApp {
     }
 
     pub fn save_document_as(&mut self, doc_id: usize) {
+        let default_name = self.documents.iter()
+            .find(|d| d.id == doc_id)
+            .map(|d| format!("{}.sts", d.timesheet.name))
+            .unwrap_or_else(|| "untitled.sts".to_string());
+
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("STS Files", &["sts"])
+            .set_file_name(&default_name)
             .save_file()
         {
             let path_str = path.to_str().unwrap().to_string();
@@ -263,6 +274,97 @@ impl eframe::App for StsApp {
                 ctx.set_style(style);
 
                 STYLE_INITIALIZED = true;
+            }
+        }
+
+        // 检测窗口关闭请求
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if !self.on_close_event() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            }
+        }
+
+        // 退出确认对话框
+        if self.show_exit_dialog {
+            let unsaved_docs: Vec<String> = self.documents.iter()
+                .filter(|d| d.is_modified && d.is_open)
+                .map(|d| d.timesheet.name.clone())
+                .collect();
+
+            let unsaved_count = unsaved_docs.len();
+
+            egui::Area::new(egui::Id::new("exit_modal_dimmer"))
+                .fixed_pos(egui::pos2(0.0, 0.0))
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    let screen_rect = ctx.screen_rect();
+                    ui.painter().rect_filled(
+                        screen_rect,
+                        0.0,
+                        egui::Color32::from_rgba_premultiplied(0, 0, 0, 150),
+                    );
+                });
+
+            let mut action: Option<i32> = None; // 0: save all, 1: discard all, 2: cancel
+
+            egui::Window::new("Unsaved Changes")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    if unsaved_count == 1 {
+                        ui.label(format!("\"{}\" has unsaved changes.", unsaved_docs[0]));
+                    } else {
+                        ui.label(format!("{} documents have unsaved changes:", unsaved_count));
+                        for name in &unsaved_docs {
+                            ui.label(format!("  - {}", name));
+                        }
+                    }
+                    ui.add_space(10.0);
+
+                    let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    ui.horizontal(|ui| {
+                        if ui.add_sized([100.0, 25.0], egui::Button::new("Save All")).clicked() || enter_pressed {
+                            action = Some(0);
+                        }
+                        if ui.add_sized(
+                            [100.0, 25.0],
+                            egui::Button::new(egui::RichText::new("Discard All").color(egui::Color32::RED))
+                        ).clicked() {
+                            action = Some(1);
+                        }
+                        if ui.add_sized([80.0, 25.0], egui::Button::new("Cancel")).clicked() {
+                            action = Some(2);
+                        }
+                    });
+                });
+
+            match action {
+                Some(0) => {
+                    // Save All
+                    let doc_ids: Vec<usize> = self.documents.iter()
+                        .filter(|d| d.is_modified && d.is_open)
+                        .map(|d| d.id)
+                        .collect();
+                    for doc_id in doc_ids {
+                        self.save_document(doc_id);
+                    }
+                    self.show_exit_dialog = false;
+                    self.allowed_to_close = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                Some(1) => {
+                    // Discard All
+                    self.show_exit_dialog = false;
+                    self.allowed_to_close = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                Some(2) => {
+                    // Cancel
+                    self.show_exit_dialog = false;
+                }
+                _ => {}
             }
         }
 
@@ -383,7 +485,8 @@ impl eframe::App for StsApp {
 
                     ui.separator();
 
-                    if ui.button("OK").clicked() {
+                    let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if ui.button("OK").clicked() || enter_pressed {
                         self.create_new_document();
                     }
                 });
@@ -491,8 +594,9 @@ impl eframe::App for StsApp {
                     ui.label("Do you want to save changes before closing?");
                     ui.add_space(10.0);
 
+                    let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
                     ui.horizontal(|ui| {
-                        if ui.add_sized([80.0, 25.0], egui::Button::new("Save")).clicked() {
+                        if ui.add_sized([80.0, 25.0], egui::Button::new("Save")).clicked() || enter_pressed {
                             action = Some(true);
                         }
                         if ui.add_sized(
@@ -541,6 +645,18 @@ impl eframe::App for StsApp {
 }
 
 impl StsApp {
+    fn on_close_event(&mut self) -> bool {
+        // 检查是否有未保存的文档
+        let has_unsaved = self.documents.iter().any(|d| d.is_modified && d.is_open);
+
+        if has_unsaved && !self.allowed_to_close {
+            self.show_exit_dialog = true;
+            false // 阻止关闭
+        } else {
+            true // 允许关闭
+        }
+    }
+
     fn render_document_content(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, doc_idx: usize) {
         let doc = &mut self.documents[doc_idx];
 
@@ -682,6 +798,15 @@ impl StsApp {
 
         // 右键菜单
         if let Some(_menu_pos) = doc.context_menu.pos {
+            // 检查是否有选择范围
+            let has_selection = doc.context_menu.selection.is_some();
+            // 检查是否为单列选择
+            let is_single_column = if let Some(((start_layer, _), (end_layer, _))) = doc.context_menu.selection {
+                start_layer == end_layer
+            } else {
+                false
+            };
+
             let menu_result = egui::Area::new(egui::Id::new(format!("context_menu_{}", doc.id)))
                 .order(egui::Order::Foreground)
                 .fixed_pos(doc.context_menu.screen_pos)
@@ -697,11 +822,17 @@ impl StsApp {
 
                         let undo = ui.button("Undo (Ctrl+Z)").clicked();
 
-                        (copy, cut, paste, undo)
+                        ui.separator();
+
+                        // Repeat 和 Reverse 只在有选择时可用
+                        let repeat = ui.add_enabled(has_selection && is_single_column, egui::Button::new("Repeat...")).clicked();
+                        let reverse = ui.add_enabled(has_selection && is_single_column, egui::Button::new("Reverse")).clicked();
+
+                        (copy, cut, paste, undo, repeat, reverse)
                     }).inner
                 });
 
-            let (copy_clicked, cut_clicked, paste_clicked, undo_clicked) = menu_result.inner;
+            let (copy_clicked, cut_clicked, paste_clicked, undo_clicked, repeat_clicked, reverse_clicked) = menu_result.inner;
             let menu_response = menu_result.response;
 
             let doc = &mut self.documents[doc_idx];
@@ -746,10 +877,33 @@ impl StsApp {
             } else if undo_clicked {
                 doc.undo();
                 doc.context_menu.pos = None;
+            } else if repeat_clicked {
+                // 打开 Repeat 弹窗
+                if let Some(((start_layer, start_frame), (end_layer, end_frame))) = doc.context_menu.selection {
+                    let min_frame = start_frame.min(end_frame);
+                    let max_frame = start_frame.max(end_frame);
+                    doc.repeat_dialog.layer = start_layer.min(end_layer);
+                    doc.repeat_dialog.start_frame = min_frame;
+                    doc.repeat_dialog.end_frame = max_frame;
+                    doc.repeat_dialog.repeat_count = 1;
+                    doc.repeat_dialog.repeat_until_end = false;
+                    doc.repeat_dialog.open = true;
+                }
+                doc.context_menu.pos = None;
+            } else if reverse_clicked {
+                // 执行 Reverse
+                if let Some((start, end)) = doc.context_menu.selection {
+                    doc.selection_state.selection_start = Some(start);
+                    doc.selection_state.selection_end = Some(end);
+                    if let Err(e) = doc.reverse_selection() {
+                        self.error_message = Some(e.to_string());
+                    }
+                }
+                doc.context_menu.pos = None;
             }
 
             // 点击菜单外部关闭
-            if !copy_clicked && !cut_clicked && !paste_clicked && !undo_clicked {
+            if !copy_clicked && !cut_clicked && !paste_clicked && !undo_clicked && !repeat_clicked && !reverse_clicked {
                 let clicked_outside = ctx.input(|i| {
                     if i.pointer.primary_clicked() {
                         if let Some(pos) = i.pointer.interact_pos() {
@@ -773,6 +927,66 @@ impl StsApp {
             }
         }
 
+        // Repeat 弹窗
+        let doc = &mut self.documents[doc_idx];
+        if doc.repeat_dialog.open {
+            let mut should_execute = false;
+            let mut should_cancel = false;
+
+            egui::Window::new("Repeat")
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut doc.repeat_dialog.open)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Selection:");
+                        ui.label(format!("frames {} - {}", doc.repeat_dialog.start_frame + 1, doc.repeat_dialog.end_frame + 1));
+                    });
+
+                    ui.separator();
+
+                    ui.horizontal(|ui| {
+                        let repeat_count_enabled = !doc.repeat_dialog.repeat_until_end;
+                        ui.add_enabled_ui(repeat_count_enabled, |ui| {
+                            ui.label("Repeat count:");
+                            ui.add(egui::DragValue::new(&mut doc.repeat_dialog.repeat_count).range(1..=1000));
+                        });
+                    });
+
+                    ui.checkbox(&mut doc.repeat_dialog.repeat_until_end, "Repeat until end");
+
+                    ui.separator();
+
+                    let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    ui.horizontal(|ui| {
+                        if ui.button("OK").clicked() || enter_pressed {
+                            should_execute = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            should_cancel = true;
+                        }
+                    });
+                });
+
+            if should_cancel {
+                doc.repeat_dialog.open = false;
+            }
+
+            if should_execute {
+                // 设置选择范围
+                doc.selection_state.selection_start = Some((doc.repeat_dialog.layer, doc.repeat_dialog.start_frame));
+                doc.selection_state.selection_end = Some((doc.repeat_dialog.layer, doc.repeat_dialog.end_frame));
+
+                let repeat_count = doc.repeat_dialog.repeat_count;
+                let repeat_until_end = doc.repeat_dialog.repeat_until_end;
+
+                if let Err(e) = doc.repeat_selection(repeat_count, repeat_until_end) {
+                    self.error_message = Some(e.to_string());
+                }
+                doc.repeat_dialog.open = false;
+            }
+        }
+
         // 检测鼠标交互，更新活跃文档
         let doc = &self.documents[doc_idx];
         if ui.ui_contains_pointer() || doc.edit_state.editing_cell.is_some() {
@@ -788,6 +1002,12 @@ impl StsApp {
 
     fn handle_document_shortcuts(&mut self, ctx: &egui::Context, doc_idx: usize, layer_count: usize) {
         let doc = &mut self.documents[doc_idx];
+
+        // 如果有对话框打开，不处理键盘事件
+        if doc.repeat_dialog.open {
+            return;
+        }
+
         let doc_id = doc.id;
 
         let mut should_copy = false;
@@ -862,6 +1082,7 @@ impl StsApp {
         // 编辑模式键盘处理
         if let Some((layer, frame)) = doc.edit_state.editing_cell {
             let has_input = !doc.edit_state.editing_text.is_empty();
+            let total_frames = doc.timesheet.total_frames();
 
             ctx.input(|i| {
                 if i.key_pressed(egui::Key::Enter) {
@@ -873,7 +1094,7 @@ impl StsApp {
                 } else {
                     let new_pos = if i.key_pressed(egui::Key::ArrowUp) && frame > 0 {
                         Some((layer, frame - 1))
-                    } else if i.key_pressed(egui::Key::ArrowDown) {
+                    } else if i.key_pressed(egui::Key::ArrowDown) && frame + 1 < total_frames {
                         Some((layer, frame + 1))
                     } else if i.key_pressed(egui::Key::ArrowLeft) && layer > 0 {
                         Some((layer - 1, frame))
@@ -897,6 +1118,8 @@ impl StsApp {
                 }
             });
         } else if let Some((layer, frame)) = doc.selection_state.selected_cell {
+            let total_frames = doc.timesheet.total_frames();
+
             ctx.input(|i| {
                 if i.key_pressed(egui::Key::Enter) {
                     let (old_value, new_value) = if frame > 0 {
@@ -913,15 +1136,17 @@ impl StsApp {
                         doc.timesheet.set_cell(layer, frame, new_value);
                     }
 
-                    doc.selection_state.selected_cell = Some((layer, frame + 1));
-                    doc.selection_state.auto_scroll_to_selection = true;
+                    if frame + 1 < total_frames {
+                        doc.selection_state.selected_cell = Some((layer, frame + 1));
+                        doc.selection_state.auto_scroll_to_selection = true;
+                    }
                 } else if i.key_pressed(egui::Key::Tab) && layer < layer_count - 1 {
                     doc.selection_state.selected_cell = Some((layer + 1, frame));
                     doc.selection_state.auto_scroll_to_selection = true;
                 } else {
                     let new_pos = if i.key_pressed(egui::Key::ArrowUp) && frame > 0 {
                         Some((layer, frame - 1))
-                    } else if i.key_pressed(egui::Key::ArrowDown) {
+                    } else if i.key_pressed(egui::Key::ArrowDown) && frame + 1 < total_frames {
                         Some((layer, frame + 1))
                     } else if i.key_pressed(egui::Key::ArrowLeft) && layer > 0 {
                         Some((layer - 1, frame))

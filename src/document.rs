@@ -82,6 +82,29 @@ impl Default for ContextMenuState {
     }
 }
 
+// Repeat 弹窗状态
+pub struct RepeatDialogState {
+    pub open: bool,
+    pub layer: usize,
+    pub start_frame: usize,
+    pub end_frame: usize,
+    pub repeat_count: u32,
+    pub repeat_until_end: bool,
+}
+
+impl Default for RepeatDialogState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            layer: 0,
+            start_frame: 0,
+            end_frame: 0,
+            repeat_count: 1,
+            repeat_until_end: false,
+        }
+    }
+}
+
 // 剪贴板数据
 pub type ClipboardData = Rc<Vec<Vec<Option<CellValue>>>>;
 
@@ -97,6 +120,7 @@ pub struct Document {
     pub context_menu: ContextMenuState,
     pub clipboard: Option<ClipboardData>,
     pub undo_stack: Box<Vec<UndoAction>>,
+    pub repeat_dialog: RepeatDialogState,
 }
 
 impl Document {
@@ -112,6 +136,7 @@ impl Document {
             context_menu: ContextMenuState::default(),
             clipboard: None,
             undo_stack: Box::new(Vec::new()),
+            repeat_dialog: RepeatDialogState::default(),
         }
     }
 
@@ -201,7 +226,10 @@ impl Document {
             self.timesheet.set_cell(layer, frame, value);
 
             if move_down {
-                self.selection_state.selected_cell = Some((layer, frame + 1));
+                let total_frames = self.timesheet.total_frames();
+                if frame + 1 < total_frames {
+                    self.selection_state.selected_cell = Some((layer, frame + 1));
+                }
             }
 
             self.edit_state.editing_cell = None;
@@ -421,5 +449,144 @@ impl Document {
                 }
             }
         }).sum()
+    }
+
+    /// 检查选择是否为单列，返回 (layer, min_frame, max_frame) 或错误信息
+    pub fn check_single_column_selection(&self) -> Result<(usize, usize, usize), &'static str> {
+        if let Some((min_layer, min_frame, max_layer, max_frame)) = self.get_selection_range() {
+            if min_layer != max_layer {
+                return Err("Only single column selection is supported");
+            }
+            Ok((min_layer, min_frame, max_frame))
+        } else {
+            Err("No selection")
+        }
+    }
+
+    /// 执行重复操作
+    pub fn repeat_selection(&mut self, repeat_count: u32, repeat_until_end: bool) -> Result<(), &'static str> {
+        let (layer, start_frame, end_frame) = self.check_single_column_selection()?;
+
+        // 获取选择范围的值
+        let selection_len = end_frame - start_frame + 1;
+        let mut source_values: Vec<Option<CellValue>> = Vec::with_capacity(selection_len);
+        for frame in start_frame..=end_frame {
+            source_values.push(self.timesheet.get_cell(layer, frame).copied());
+        }
+
+        let total_frames = self.timesheet.total_frames();
+        let insert_start = end_frame + 1;
+
+        // 计算需要重复的次数
+        let actual_repeat_count = if repeat_until_end {
+            let remaining = total_frames.saturating_sub(insert_start);
+            (remaining / selection_len).max(1) as u32
+        } else {
+            repeat_count
+        };
+
+        // 计算需要写入的总帧数
+        let total_write_frames = selection_len * actual_repeat_count as usize;
+        let write_end = insert_start + total_write_frames;
+
+        // 检查是否超出范围
+        if write_end > total_frames {
+            return Err("Not enough frames to repeat");
+        }
+
+        // 保存旧值用于撤销
+        let mut old_values = Vec::new();
+        let mut old_row = Vec::with_capacity(total_write_frames);
+        for frame in insert_start..write_end {
+            old_row.push(self.timesheet.get_cell(layer, frame).copied());
+        }
+        old_values.push(old_row);
+
+        self.undo_stack.push(UndoAction::SetRange {
+            min_layer: layer,
+            min_frame: insert_start,
+            old_values: Rc::new(old_values),
+        });
+        self.is_modified = true;
+
+        // 写入重复的值
+        let mut write_frame = insert_start;
+        for _ in 0..actual_repeat_count {
+            for value in &source_values {
+                if write_frame < total_frames {
+                    self.timesheet.set_cell(layer, write_frame, *value);
+                    write_frame += 1;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// 执行反向操作
+    /// 反向时跳过与最后一帧相同值的所有帧，例如 111222333 -> 111222333222111
+    pub fn reverse_selection(&mut self) -> Result<(), &'static str> {
+        let (layer, start_frame, end_frame) = self.check_single_column_selection()?;
+
+        let selection_len = end_frame - start_frame + 1;
+        if selection_len < 2 {
+            return Err("Selection must have at least 2 frames");
+        }
+
+        // 获取最后一帧的值
+        let last_value = self.timesheet.get_cell(layer, end_frame).copied();
+
+        // 从 end_frame 向前找到第一个不同值的帧
+        let mut actual_end = end_frame;
+        while actual_end > start_frame {
+            let current_value = self.timesheet.get_cell(layer, actual_end - 1).copied();
+            if current_value != last_value {
+                break;
+            }
+            actual_end -= 1;
+        }
+
+        // 如果所有帧都是相同值，无法反向
+        if actual_end <= start_frame {
+            return Err("All frames have the same value, cannot reverse");
+        }
+
+        // 收集反向值（从 actual_end - 1 到 start_frame）
+        let reverse_len = actual_end - start_frame;
+        let mut reverse_values: Vec<Option<CellValue>> = Vec::with_capacity(reverse_len);
+        for frame in (start_frame..actual_end).rev() {
+            reverse_values.push(self.timesheet.get_cell(layer, frame).copied());
+        }
+
+        let total_frames = self.timesheet.total_frames();
+        let insert_start = end_frame + 1;
+        let write_end = insert_start + reverse_len;
+
+        // 检查是否超出范围
+        if write_end > total_frames {
+            return Err("Not enough frames to reverse");
+        }
+
+        // 保存旧值用于撤销
+        let mut old_values = Vec::new();
+        let mut old_row = Vec::with_capacity(reverse_len);
+        for frame in insert_start..write_end {
+            old_row.push(self.timesheet.get_cell(layer, frame).copied());
+        }
+        old_values.push(old_row);
+
+        self.undo_stack.push(UndoAction::SetRange {
+            min_layer: layer,
+            min_frame: insert_start,
+            old_values: Rc::new(old_values),
+        });
+        self.is_modified = true;
+
+        // 写入反向值
+        for (i, value) in reverse_values.iter().enumerate() {
+            self.timesheet.set_cell(layer, insert_start + i, *value);
+        }
+
+        Ok(())
     }
 }
