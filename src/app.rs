@@ -523,6 +523,12 @@ impl eframe::App for StsApp {
                             });
                     });
 
+                    ui.add_space(15.0);
+                    ui.heading("General");
+                    ui.add_space(5.0);
+
+                    ui.checkbox(&mut self.temp_auto_save_enabled, "Auto-save (save after each edit)");
+
                     ui.add_space(10.0);
                     ui.separator();
                     ui.add_space(5.0);
