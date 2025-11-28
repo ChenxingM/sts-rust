@@ -43,6 +43,9 @@ impl AppSettings {
             if let Ok(encoding) = hkcu.get_value::<String, _>("CsvEncoding") {
                 settings.csv_encoding = CsvEncoding::from_str(&encoding);
             }
+            if let Ok(auto_save) = hkcu.get_value::<u32, _>("AutoSaveEnabled") {
+                settings.auto_save_enabled = auto_save != 0;
+            }
         }
 
         settings
@@ -66,6 +69,9 @@ impl AppSettings {
 
         key.set_value("CsvEncoding", &self.csv_encoding.as_str())
             .map_err(|e| format!("Failed to save CsvEncoding: {}", e))?;
+
+        key.set_value("AutoSaveEnabled", &(self.auto_save_enabled as u32))
+            .map_err(|e| format!("Failed to save AutoSaveEnabled: {}", e))?;
 
         Ok(())
     }
