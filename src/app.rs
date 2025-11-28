@@ -4,8 +4,8 @@ use eframe::egui;
 use std::rc::Rc;
 use std::sync::OnceLock;
 use crate::document::Document;
-use crate::ui::{render_cell, AboutDialog};
-use crate::settings::{ExportSettings, CsvEncoding};
+use crate::ui::{render_cell, CellColors, AboutDialog};
+use crate::settings::{ExportSettings, CsvEncoding, ThemeMode};
 use sts_rust::TimeSheet;
 use sts_rust::models::timesheet::CellValue;
 
@@ -31,6 +31,7 @@ pub struct StsApp {
     pub temp_csv_header_name: String,
     pub temp_csv_encoding: usize, // 0: UTF-8, 1: GB2312, 2: Shift-JIS
     pub temp_auto_save_enabled: bool,
+    pub temp_theme_mode: ThemeMode,
     // 关于对话框
     pub about_dialog: AboutDialog,
 }
@@ -61,6 +62,7 @@ impl Default for StsApp {
             temp_csv_header_name: settings.csv_header_name.clone(),
             temp_csv_encoding: temp_encoding,
             temp_auto_save_enabled: settings.auto_save_enabled,
+            temp_theme_mode: settings.theme_mode,
             settings,
             show_settings_dialog: false,
             about_dialog: AboutDialog::default(),
@@ -297,13 +299,31 @@ impl StsApp {
             }
         }
     }
+
+    fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
+        let visuals = match theme_mode {
+            ThemeMode::Light => egui::Visuals::light(),
+            ThemeMode::Dark => egui::Visuals::dark(),
+            ThemeMode::System => {
+                // Try to detect system theme, fallback to light
+                if ctx.style().visuals.dark_mode {
+                    egui::Visuals::dark()
+                } else {
+                    egui::Visuals::light()
+                }
+            }
+        };
+        ctx.set_visuals(visuals);
+    }
 }
+
 impl eframe::App for StsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // 只在首次设置视觉样式
         static STYLE_INIT: OnceLock<()> = OnceLock::new();
+        let theme_mode = self.settings.theme_mode;
         STYLE_INIT.get_or_init(|| {
-            ctx.set_visuals(egui::Visuals::light());
+            Self::apply_theme(ctx, theme_mode);
 
             let mut style = (*ctx.style()).clone();
             style.spacing.window_margin = egui::Margin::same(4.0);
@@ -460,6 +480,7 @@ impl eframe::App for StsApp {
                             CsvEncoding::ShiftJis => 2,
                         };
                         self.temp_auto_save_enabled = self.settings.auto_save_enabled;
+                        self.temp_theme_mode = self.settings.theme_mode;
                         self.show_settings_dialog = true;
                         ui.close_menu();
                     }
@@ -530,6 +551,23 @@ impl eframe::App for StsApp {
                     ui.checkbox(&mut self.temp_auto_save_enabled, "Auto-save (save after each edit)");
 
                     ui.add_space(10.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("Theme:");
+                        egui::ComboBox::from_id_salt("theme_mode")
+                            .selected_text(match self.temp_theme_mode {
+                                ThemeMode::System => "System",
+                                ThemeMode::Light => "Light",
+                                ThemeMode::Dark => "Dark",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.temp_theme_mode, ThemeMode::System, "System");
+                                ui.selectable_value(&mut self.temp_theme_mode, ThemeMode::Light, "Light");
+                                ui.selectable_value(&mut self.temp_theme_mode, ThemeMode::Dark, "Dark");
+                            });
+                    });
+
+                    ui.add_space(10.0);
                     ui.separator();
                     ui.add_space(5.0);
 
@@ -553,6 +591,10 @@ impl eframe::App for StsApp {
                     _ => CsvEncoding::Gb2312,
                 };
                 self.settings.auto_save_enabled = self.temp_auto_save_enabled;
+                self.settings.theme_mode = self.temp_theme_mode;
+
+                // Apply theme
+                Self::apply_theme(ctx, self.settings.theme_mode);
 
                 // 保存到注册表
                 if let Err(e) = self.settings.save_to_registry() {
@@ -819,6 +861,7 @@ impl StsApp {
 
     fn render_document_content(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, doc_idx: usize) {
         let auto_save_enabled = self.settings.auto_save_enabled;
+        let colors = CellColors::from_visuals(ui.visuals());
         let doc = &mut self.documents[doc_idx];
 
         let row_height = 16.0;
@@ -833,7 +876,7 @@ impl StsApp {
             ui.painter().rect_stroke(
                 corner_rect,
                 0.0,
-                egui::Stroke::new(0.0, egui::Color32::GRAY),
+                egui::Stroke::new(0.0, colors.border_normal),
             );
 
             for i in 0..layer_count {
@@ -841,12 +884,12 @@ impl StsApp {
                 let is_editing = doc.edit_state.editing_layer_name == Some(i);
 
                 let bg_color = if is_editing {
-                    egui::Color32::from_rgb(255, 255, 200)
+                    colors.header_bg_editing
                 } else {
-                    egui::Color32::from_rgb(240, 240, 240)
+                    colors.header_bg
                 };
                 ui.painter().rect_filled(rect, 0.0, bg_color);
-                ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY));
+                ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.0, colors.border_normal));
 
                 if is_editing {
                     let resp = ui.put(
@@ -875,7 +918,7 @@ impl StsApp {
                         egui::Align2::CENTER_CENTER,
                         layer_name,
                         egui::FontId::proportional(11.0),
-                        egui::Color32::BLACK,
+                        colors.header_text,
                     );
 
                     if resp.clicked() {
@@ -887,6 +930,9 @@ impl StsApp {
         });
 
         ui.separator();
+
+        // Store colors for use in closures
+        let colors = CellColors::from_visuals(ui.visuals());
 
         // 数据区域
         let total_frames = {
@@ -920,7 +966,7 @@ impl StsApp {
                         ui.painter().rect_stroke(
                             page_rect,
                             0.0,
-                            egui::Stroke::new(1.0, egui::Color32::GRAY),
+                            egui::Stroke::new(1.0, colors.border_normal),
                         );
 
                         ui.painter().text(
@@ -928,7 +974,7 @@ impl StsApp {
                             egui::Align2::LEFT_CENTER,
                             page_str,
                             egui::FontId::monospace(11.0),
-                            egui::Color32::DARK_GRAY,
+                            colors.frame_col_text,
                         );
 
                         if !frame_str.is_empty() {
@@ -937,13 +983,13 @@ impl StsApp {
                                 egui::Align2::RIGHT_CENTER,
                                 frame_str,
                                 egui::FontId::monospace(11.0),
-                                egui::Color32::DARK_GRAY,
+                                colors.frame_col_text,
                             );
                         }
 
                         // 单元格渲染
                         for layer_idx in 0..layer_count {
-                            render_cell(ui, doc, layer_idx, frame_idx, col_width, row_height, pointer_pos, pointer_down);
+                            render_cell(ui, doc, layer_idx, frame_idx, col_width, row_height, pointer_pos, pointer_down, &colors);
                         }
                     });
                 }

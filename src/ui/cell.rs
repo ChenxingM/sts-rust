@@ -4,15 +4,60 @@ use eframe::egui;
 use crate::document::Document;
 use sts_rust::models::timesheet::CellValue;
 
-// 单元格渲染颜色常量
-pub const BG_EDITING: egui::Color32 = egui::Color32::from_rgb(255, 255, 200);
-pub const BG_SELECTED: egui::Color32 = egui::Color32::from_rgb(200, 220, 255);
-pub const BG_IN_SELECTION: egui::Color32 = egui::Color32::from_rgb(220, 235, 255);
-pub const BG_NORMAL: egui::Color32 = egui::Color32::WHITE;
-pub const BORDER_SELECTION: egui::Color32 = egui::Color32::from_rgb(100, 150, 255);
-pub const BORDER_NORMAL: egui::Color32 = egui::Color32::GRAY;
-
 pub const DASH: &str = "-";
+
+/// Theme-aware colors for cells
+pub struct CellColors {
+    pub bg_editing: egui::Color32,
+    pub bg_selected: egui::Color32,
+    pub bg_in_selection: egui::Color32,
+    pub bg_normal: egui::Color32,
+    pub border_selection: egui::Color32,
+    pub border_normal: egui::Color32,
+    pub text_color: egui::Color32,
+    // Header colors
+    pub header_bg: egui::Color32,
+    pub header_bg_editing: egui::Color32,
+    pub header_text: egui::Color32,
+    // Frame number column colors
+    pub frame_col_text: egui::Color32,
+}
+
+impl CellColors {
+    pub fn from_visuals(visuals: &egui::Visuals) -> Self {
+        if visuals.dark_mode {
+            // Dark theme colors
+            Self {
+                bg_editing: egui::Color32::from_rgb(80, 80, 50),
+                bg_selected: egui::Color32::from_rgb(60, 80, 120),
+                bg_in_selection: egui::Color32::from_rgb(50, 65, 90),
+                bg_normal: egui::Color32::from_rgb(35, 35, 35),
+                border_selection: egui::Color32::from_rgb(100, 150, 255),
+                border_normal: egui::Color32::from_rgb(80, 80, 80),
+                text_color: egui::Color32::from_rgb(220, 220, 220),
+                header_bg: egui::Color32::from_rgb(50, 50, 50),
+                header_bg_editing: egui::Color32::from_rgb(80, 80, 50),
+                header_text: egui::Color32::from_rgb(200, 200, 200),
+                frame_col_text: egui::Color32::from_rgb(150, 150, 150),
+            }
+        } else {
+            // Light theme colors
+            Self {
+                bg_editing: egui::Color32::from_rgb(255, 255, 200),
+                bg_selected: egui::Color32::from_rgb(200, 220, 255),
+                bg_in_selection: egui::Color32::from_rgb(220, 235, 255),
+                bg_normal: egui::Color32::WHITE,
+                border_selection: egui::Color32::from_rgb(100, 150, 255),
+                border_normal: egui::Color32::GRAY,
+                text_color: egui::Color32::BLACK,
+                header_bg: egui::Color32::from_rgb(240, 240, 240),
+                header_bg_editing: egui::Color32::from_rgb(255, 255, 200),
+                header_text: egui::Color32::BLACK,
+                frame_col_text: egui::Color32::DARK_GRAY,
+            }
+        }
+    }
+}
 
 /// 渲染单个单元格
 #[inline]
@@ -25,6 +70,7 @@ pub fn render_cell(
     row_height: f32,
     pointer_pos: Option<egui::Pos2>,
     pointer_down: bool,
+    colors: &CellColors,
 ) {
     let is_selected = doc.selection_state.selected_cell == Some((layer_idx, frame_idx));
     let is_editing = doc.edit_state.editing_cell == Some((layer_idx, frame_idx));
@@ -44,12 +90,12 @@ pub fn render_cell(
     let is_in_selection = doc.is_cell_in_selection(layer_idx, frame_idx);
 
     // 合并背景和边框绘制调用
-    let bg_color = if is_editing { BG_EDITING }
-        else if is_selected { BG_SELECTED }
-        else if is_in_selection { BG_IN_SELECTION }
-        else { BG_NORMAL };
+    let bg_color = if is_editing { colors.bg_editing }
+        else if is_selected { colors.bg_selected }
+        else if is_in_selection { colors.bg_in_selection }
+        else { colors.bg_normal };
 
-    let border_color = if is_in_selection { BORDER_SELECTION } else { BORDER_NORMAL };
+    let border_color = if is_in_selection { colors.border_selection } else { colors.border_normal };
 
     let painter = ui.painter();
     painter.rect_filled(cell_rect, 0.0, bg_color);
@@ -91,7 +137,7 @@ pub fn render_cell(
                 egui::Align2::CENTER_CENTER,
                 display_text,
                 egui::FontId::monospace(11.0),
-                egui::Color32::BLACK,
+                colors.text_color,
             );
         }
     }

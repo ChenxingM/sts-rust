@@ -3,5 +3,5 @@
 pub mod cell;
 pub mod about;
 
-pub use cell::render_cell;
+pub use cell::{render_cell, CellColors};
 pub use about::AboutDialog;

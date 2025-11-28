@@ -10,6 +10,33 @@ pub use sts_rust::CsvEncoding;
 
 const REGISTRY_KEY: &str = r"Software\STS-Rust";
 
+/// Theme mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThemeMode {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemeMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ThemeMode::System => "system",
+            ThemeMode::Light => "light",
+            ThemeMode::Dark => "dark",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "light" => ThemeMode::Light,
+            "dark" => ThemeMode::Dark,
+            _ => ThemeMode::System,
+        }
+    }
+}
+
 /// Application settings (combines all settings)
 #[derive(Debug, Clone)]
 pub struct AppSettings {
@@ -18,6 +45,8 @@ pub struct AppSettings {
     pub csv_encoding: CsvEncoding,
     // Auto-save settings
     pub auto_save_enabled: bool,
+    // Theme settings
+    pub theme_mode: ThemeMode,
 }
 
 impl Default for AppSettings {
@@ -26,6 +55,7 @@ impl Default for AppSettings {
             csv_header_name: "动画".to_string(),
             csv_encoding: CsvEncoding::Gb2312,
             auto_save_enabled: false,
+            theme_mode: ThemeMode::System,
         }
     }
 }
@@ -45,6 +75,9 @@ impl AppSettings {
             }
             if let Ok(auto_save) = hkcu.get_value::<u32, _>("AutoSaveEnabled") {
                 settings.auto_save_enabled = auto_save != 0;
+            }
+            if let Ok(theme) = hkcu.get_value::<String, _>("ThemeMode") {
+                settings.theme_mode = ThemeMode::from_str(&theme);
             }
         }
 
@@ -72,6 +105,9 @@ impl AppSettings {
 
         key.set_value("AutoSaveEnabled", &(self.auto_save_enabled as u32))
             .map_err(|e| format!("Failed to save AutoSaveEnabled: {}", e))?;
+
+        key.set_value("ThemeMode", &self.theme_mode.as_str())
+            .map_err(|e| format!("Failed to save ThemeMode: {}", e))?;
 
         Ok(())
     }
