@@ -813,6 +813,7 @@ impl StsApp {
     }
 
     fn render_document_content(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, doc_idx: usize) {
+        let auto_save_enabled = self.settings.auto_save_enabled;
         let doc = &mut self.documents[doc_idx];
 
         let row_height = 16.0;
@@ -1013,12 +1014,14 @@ impl StsApp {
                     doc.selection_state.selection_start = Some(start);
                     doc.selection_state.selection_end = Some(end);
                     doc.cut_selection(ctx);
+                    if auto_save_enabled { doc.auto_save(); }
                     doc.selection_state.selection_start = None;
                     doc.selection_state.selection_end = None;
                 } else if let Some((layer, frame)) = doc.context_menu.pos {
                     doc.selection_state.selection_start = Some((layer, frame));
                     doc.selection_state.selection_end = Some((layer, frame));
                     doc.cut_selection(ctx);
+                    if auto_save_enabled { doc.auto_save(); }
                     doc.selection_state.selection_start = None;
                     doc.selection_state.selection_end = None;
                 }
@@ -1028,9 +1031,11 @@ impl StsApp {
                     doc.selection_state.selected_cell = Some((layer, frame));
                 }
                 doc.paste_clipboard();
+                if auto_save_enabled { doc.auto_save(); }
                 doc.context_menu.pos = None;
             } else if undo_clicked {
                 doc.undo();
+                if auto_save_enabled { doc.auto_save(); }
                 doc.context_menu.pos = None;
             } else if repeat_clicked {
                 // 打开 Repeat 弹窗
@@ -1137,6 +1142,8 @@ impl StsApp {
 
                 if let Err(e) = doc.repeat_selection(repeat_count, repeat_until_end) {
                     self.error_message = Some(e.to_string());
+                } else if auto_save_enabled {
+                    doc.auto_save();
                 }
                 doc.repeat_dialog.open = false;
             }
@@ -1156,6 +1163,7 @@ impl StsApp {
 
 
     fn handle_document_shortcuts(&mut self, ctx: &egui::Context, doc_idx: usize, layer_count: usize) {
+        let auto_save_enabled = self.settings.auto_save_enabled;
         let doc = &mut self.documents[doc_idx];
 
         // 如果有对话框打开，不处理键盘事件
@@ -1200,14 +1208,20 @@ impl StsApp {
             return;
         }
 
-        let is_editing = doc.edit_state.editing_cell.is_some() || doc.edit_state.editing_layer_name.is_some();
+        // Update jump step (only when not editing)
+        if jump_step_delta != 0 {
+            let new_step = (doc.jump_step as i32 + jump_step_delta).max(1) as usize;
+            doc.jump_step = new_step;
+        }
 
         if should_undo {
             doc.undo();
+            if auto_save_enabled { doc.auto_save(); }
         }
 
         if !is_editing && should_delete {
             doc.delete_selection();
+            if auto_save_enabled { doc.auto_save(); }
         }
 
         if !is_editing && (should_copy || should_cut || should_paste) {
@@ -1222,15 +1236,18 @@ impl StsApp {
             } else if should_cut {
                 if doc.selection_state.selection_start.is_some() && doc.selection_state.selection_end.is_some() {
                     doc.cut_selection(ctx);
+                    if auto_save_enabled { doc.auto_save(); }
                 } else if let Some((layer, frame)) = doc.selection_state.selected_cell {
                     doc.selection_state.selection_start = Some((layer, frame));
                     doc.selection_state.selection_end = Some((layer, frame));
                     doc.cut_selection(ctx);
+                    if auto_save_enabled { doc.auto_save(); }
                     doc.selection_state.selection_start = None;
                     doc.selection_state.selection_end = None;
                 }
             } else if should_paste {
                 doc.paste_clipboard();
+                if auto_save_enabled { doc.auto_save(); }
             }
         }
 
@@ -1238,11 +1255,13 @@ impl StsApp {
         if let Some((layer, frame)) = doc.edit_state.editing_cell {
             let has_input = !doc.edit_state.editing_text.is_empty();
             let total_frames = doc.timesheet.total_frames();
+            let mut did_edit = false;
 
             ctx.input(|i| {
                 if i.key_pressed(egui::Key::Enter) {
                     doc.finish_edit(true, true);
                     doc.selection_state.auto_scroll_to_selection = true;
+                    did_edit = true;
                 } else if i.key_pressed(egui::Key::Escape) {
                     doc.edit_state.editing_cell = None;
                     doc.edit_state.editing_text.clear();
@@ -1263,6 +1282,7 @@ impl StsApp {
                         if has_input {
                             doc.finish_edit(false, true);
                             doc.start_edit(pos.0, pos.1);
+                            did_edit = true;
                         } else {
                             doc.edit_state.editing_cell = None;
                             doc.edit_state.editing_text.clear();
@@ -1272,8 +1292,13 @@ impl StsApp {
                     }
                 }
             });
+
+            if did_edit && auto_save_enabled {
+                doc.auto_save();
+            }
         } else if let Some((layer, frame)) = doc.selection_state.selected_cell {
             let total_frames = doc.timesheet.total_frames();
+            let mut did_modify = false;
 
             ctx.input(|i| {
                 if i.key_pressed(egui::Key::Enter) {
@@ -1289,6 +1314,7 @@ impl StsApp {
                         doc.push_undo_set_cell(layer, frame, old_value);
                         doc.is_modified = true;
                         doc.timesheet.set_cell(layer, frame, new_value);
+                        did_modify = true;
                     }
 
                     if frame + 1 < total_frames {
@@ -1327,6 +1353,10 @@ impl StsApp {
                     }
                 }
             });
+
+            if did_modify && auto_save_enabled {
+                doc.auto_save();
+            }
         }
     }
 }
