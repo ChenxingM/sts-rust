@@ -8,25 +8,29 @@ use winreg::RegKey;
 // Re-export CsvEncoding from library
 pub use sts_rust::CsvEncoding;
 
-/// Export settings
+const REGISTRY_KEY: &str = r"Software\STS-Rust";
+
+/// Application settings (combines all settings)
 #[derive(Debug, Clone)]
-pub struct ExportSettings {
+pub struct AppSettings {
+    // CSV export settings
     pub csv_header_name: String,
     pub csv_encoding: CsvEncoding,
+    // Auto-save settings
+    pub auto_save_enabled: bool,
 }
 
-impl Default for ExportSettings {
+impl Default for AppSettings {
     fn default() -> Self {
         Self {
             csv_header_name: "动画".to_string(),
             csv_encoding: CsvEncoding::Gb2312,
+            auto_save_enabled: false,
         }
     }
 }
 
-const REGISTRY_KEY: &str = r"Software\STS-Rust";
-
-impl ExportSettings {
+impl AppSettings {
     /// Load settings from Windows registry
     #[cfg(feature = "winreg")]
     pub fn load_from_registry() -> Self {
@@ -72,3 +76,6 @@ impl ExportSettings {
         Ok(())
     }
 }
+
+// Keep ExportSettings as alias for backward compatibility
+pub type ExportSettings = AppSettings;
