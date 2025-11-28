@@ -46,11 +46,28 @@ fn setup_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+fn load_icon() -> Option<egui::IconData> {
+    let icon_bytes = include_bytes!("../icon.ico");
+    let icon_image = image::load_from_memory(icon_bytes).ok()?.into_rgba8();
+    let (width, height) = icon_image.dimensions();
+    Some(egui::IconData {
+        rgba: icon_image.into_raw(),
+        width,
+        height,
+    })
+}
+
 fn main() -> Result<(), eframe::Error> {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1200.0, 800.0])
+        .with_title("STS 3.0");
+
+    if let Some(icon) = load_icon() {
+        viewport = viewport.with_icon(std::sync::Arc::new(icon));
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1200.0, 800.0])
-            .with_title("STS 3.0"),
+        viewport,
         ..Default::default()
     };
 

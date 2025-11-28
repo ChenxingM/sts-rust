@@ -22,7 +22,7 @@ regex = { version = "1.10", default-features = false, features = ["std", "perf",
 csv = { version = "1.3", default-features = false }
 percent-encoding = "2.3"
 
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "ico"] }
 
 # Windows registry support
 winreg = { version = "0.52", optional = true }
@@ -30,6 +30,9 @@ winreg = { version = "0.52", optional = true }
 [dev-dependencies]
 pretty_assertions = "1.4"
 tempfile = "3.8"
+
+[build-dependencies]
+winres = "0.1"
 
 [features]
 default = ["gui-egui"]
