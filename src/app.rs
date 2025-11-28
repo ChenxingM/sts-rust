@@ -989,11 +989,15 @@ impl StsApp {
                         let repeat = ui.add_enabled(has_selection && is_single_column, egui::Button::new("Repeat...")).clicked();
                         let reverse = ui.add_enabled(has_selection && is_single_column, egui::Button::new("Reverse")).clicked();
 
-                        (copy, cut, paste, undo, repeat, reverse)
+                        ui.separator();
+
+                        let copy_ae = ui.button("Copy AE Keyframes").clicked();
+
+                        (copy, cut, paste, undo, repeat, reverse, copy_ae)
                     }).inner
                 });
 
-            let (copy_clicked, cut_clicked, paste_clicked, undo_clicked, repeat_clicked, reverse_clicked) = menu_result.inner;
+            let (copy_clicked, cut_clicked, paste_clicked, undo_clicked, repeat_clicked, reverse_clicked, copy_ae_clicked) = menu_result.inner;
             let menu_response = menu_result.response;
 
             let doc = &mut self.documents[doc_idx];
@@ -1062,13 +1066,25 @@ impl StsApp {
                     doc.selection_state.selection_end = Some(end);
                     if let Err(e) = doc.reverse_selection() {
                         self.error_message = Some(e.to_string());
+                    } else if auto_save_enabled {
+                        doc.auto_save();
+                    }
+                }
+                doc.context_menu.pos = None;
+            } else if copy_ae_clicked {
+                // Copy AE Keyframes - use clicked cell's layer
+                if let Some((layer, _frame)) = doc.context_menu.pos {
+                    if let Err(e) = doc.copy_ae_keyframes(ctx, layer) {
+                        self.error_message = Some(e.to_string());
+                    } else {
+                        self.error_message = Some("AE Time Remap keyframes copied".to_string());
                     }
                 }
                 doc.context_menu.pos = None;
             }
 
             // 点击菜单外部关闭
-            if !copy_clicked && !cut_clicked && !paste_clicked && !undo_clicked && !repeat_clicked && !reverse_clicked {
+            if !copy_clicked && !cut_clicked && !paste_clicked && !undo_clicked && !repeat_clicked && !reverse_clicked && !copy_ae_clicked {
                 let clicked_outside = ctx.input(|i| {
                     if i.pointer.primary_clicked() {
                         if let Some(pos) = i.pointer.interact_pos() {
