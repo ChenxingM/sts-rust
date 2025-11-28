@@ -180,6 +180,14 @@ impl Document {
         }
     }
 
+    /// Auto-save if file path exists. Saves silently (no error returned).
+    /// Sets is_modified to false after successful save.
+    pub fn auto_save(&mut self) {
+        if self.file_path.is_some() {
+            let _ = self.save();
+        }
+    }
+
     #[inline]
     pub fn start_edit(&mut self, layer: usize, frame: usize) {
         self.edit_state.editing_cell = Some((layer, frame));

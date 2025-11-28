@@ -288,6 +288,15 @@ impl StsApp {
             }
         }
     }
+
+    /// Auto-save document if auto-save is enabled and document has a file path
+    fn auto_save_document(&mut self, doc_idx: usize) {
+        if self.settings.auto_save_enabled {
+            if let Some(doc) = self.documents.get_mut(doc_idx) {
+                doc.auto_save();
+            }
+        }
+    }
 }
 impl eframe::App for StsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
