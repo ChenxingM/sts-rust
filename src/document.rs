@@ -122,6 +122,7 @@ pub struct Document {
     pub clipboard: Option<ClipboardData>,
     pub undo_stack: VecDeque<UndoAction>,
     pub repeat_dialog: RepeatDialogState,
+    pub jump_step: usize,  // Enter key jump step (adjustable with / and *)
 }
 
 impl Document {
@@ -138,6 +139,7 @@ impl Document {
             clipboard: None,
             undo_stack: VecDeque::with_capacity(MAX_UNDO_ACTIONS),
             repeat_dialog: RepeatDialogState::default(),
+            jump_step: 1,
         }
     }
 
@@ -236,8 +238,23 @@ impl Document {
 
             if move_down {
                 let total_frames = self.timesheet.total_frames();
-                if frame + 1 < total_frames {
-                    self.selection_state.selected_cell = Some((layer, frame + 1));
+                let new_frame = frame + self.jump_step;
+
+                // Fill skipped cells with Same marker (continuing the value)
+                if self.jump_step > 1 && value.is_some() {
+                    for skip_frame in (frame + 1)..new_frame.min(total_frames) {
+                        let old_skip_value = self.timesheet.get_cell(layer, skip_frame).copied();
+                        if record_undo && old_skip_value != Some(CellValue::Same) {
+                            self.push_undo_set_cell(layer, skip_frame, old_skip_value);
+                        }
+                        self.timesheet.set_cell(layer, skip_frame, Some(CellValue::Same));
+                    }
+                }
+
+                if new_frame < total_frames {
+                    self.selection_state.selected_cell = Some((layer, new_frame));
+                } else if total_frames > 0 {
+                    self.selection_state.selected_cell = Some((layer, total_frames - 1));
                 }
             }
 

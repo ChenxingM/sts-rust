@@ -667,7 +667,12 @@ impl eframe::App for StsApp {
         for doc_idx in 0..num_docs {
             let (window_title, doc_id_val, is_open_before) = {
                 let doc = &self.documents[doc_idx];
-                (doc.title(), doc.id, doc.is_open)
+                let title = if doc.jump_step > 1 {
+                    format!("{} [Step: {}]", doc.title(), doc.jump_step)
+                } else {
+                    doc.title()
+                };
+                (title, doc.id, doc.is_open)
             };
 
             if !is_open_before {
@@ -1180,12 +1185,23 @@ impl StsApp {
         let mut should_delete = false;
         let mut should_save = false;
 
+        let is_editing = doc.edit_state.editing_cell.is_some() || doc.edit_state.editing_layer_name.is_some();
+        let mut jump_step_delta: i32 = 0;
+
         ctx.input(|i| {
             for event in &i.events {
                 match event {
                     egui::Event::Copy => should_copy = true,
                     egui::Event::Cut => should_cut = true,
                     egui::Event::Paste(_) => should_paste = true,
+                    // Detect / and * characters for jump step (only when not editing)
+                    egui::Event::Text(text) if !is_editing => {
+                        if text == "/" {
+                            jump_step_delta = -1;
+                        } else if text == "*" {
+                            jump_step_delta = 1;
+                        }
+                    }
                     _ => {}
                 }
             }
