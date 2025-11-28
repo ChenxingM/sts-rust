@@ -25,19 +25,20 @@ pub struct StsApp {
     // 应用程序关闭状态
     pub show_exit_dialog: bool,
     pub allowed_to_close: bool,
-    // 导出设置
-    pub export_settings: ExportSettings,
+    // 设置
+    pub settings: ExportSettings,
     pub show_settings_dialog: bool,
     pub temp_csv_header_name: String,
     pub temp_csv_encoding: usize, // 0: UTF-8, 1: GB2312, 2: Shift-JIS
+    pub temp_auto_save_enabled: bool,
     // 关于对话框
     pub about_dialog: AboutDialog,
 }
 
 impl Default for StsApp {
     fn default() -> Self {
-        let export_settings = ExportSettings::load_from_registry();
-        let temp_encoding = match export_settings.csv_encoding {
+        let settings = ExportSettings::load_from_registry();
+        let temp_encoding = match settings.csv_encoding {
             CsvEncoding::Utf8 => 0,
             CsvEncoding::Gb2312 => 1,
             CsvEncoding::ShiftJis => 2,
@@ -57,9 +58,10 @@ impl Default for StsApp {
             error_message: None,
             show_exit_dialog: false,
             allowed_to_close: false,
-            temp_csv_header_name: export_settings.csv_header_name.clone(),
+            temp_csv_header_name: settings.csv_header_name.clone(),
             temp_csv_encoding: temp_encoding,
-            export_settings,
+            temp_auto_save_enabled: settings.auto_save_enabled,
+            settings,
             show_settings_dialog: false,
             about_dialog: AboutDialog::default(),
         }
@@ -273,8 +275,8 @@ impl StsApp {
                 match sts_rust::write_csv_file_with_options(
                     &doc.timesheet,
                     path_str,
-                    &self.export_settings.csv_header_name,
-                    self.export_settings.csv_encoding,
+                    &self.settings.csv_header_name,
+                    self.settings.csv_encoding,
                 ) {
                     Ok(_) => {
                         self.error_message = Some(format!("Exported to CSV: {}", path_str));
@@ -442,12 +444,13 @@ impl eframe::App for StsApp {
                 ui.menu_button("Edit", |ui| {
                     if ui.button("Settings...").clicked() {
                         // 初始化临时设置值
-                        self.temp_csv_header_name = self.export_settings.csv_header_name.clone();
-                        self.temp_csv_encoding = match self.export_settings.csv_encoding {
+                        self.temp_csv_header_name = self.settings.csv_header_name.clone();
+                        self.temp_csv_encoding = match self.settings.csv_encoding {
                             CsvEncoding::Utf8 => 0,
                             CsvEncoding::Gb2312 => 1,
                             CsvEncoding::ShiftJis => 2,
                         };
+                        self.temp_auto_save_enabled = self.settings.auto_save_enabled;
                         self.show_settings_dialog = true;
                         ui.close_menu();
                     }
@@ -528,15 +531,16 @@ impl eframe::App for StsApp {
 
             if should_save {
                 // 更新设置
-                self.export_settings.csv_header_name = self.temp_csv_header_name.clone();
-                self.export_settings.csv_encoding = match self.temp_csv_encoding {
+                self.settings.csv_header_name = self.temp_csv_header_name.clone();
+                self.settings.csv_encoding = match self.temp_csv_encoding {
                     0 => CsvEncoding::Utf8,
                     2 => CsvEncoding::ShiftJis,
                     _ => CsvEncoding::Gb2312,
                 };
+                self.settings.auto_save_enabled = self.temp_auto_save_enabled;
 
                 // 保存到注册表
-                if let Err(e) = self.export_settings.save_to_registry() {
+                if let Err(e) = self.settings.save_to_registry() {
                     self.error_message = Some(format!("Failed to save settings: {}", e));
                 }
 
