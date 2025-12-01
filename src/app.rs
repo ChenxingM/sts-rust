@@ -642,7 +642,7 @@ impl eframe::App for StsApp {
                     });
                     ui.horizontal(|ui| {
                         ui.label("Layers:");
-                        ui.add(egui::DragValue::new(&mut self.new_layer_count).range(1..=26));
+                        ui.add(egui::DragValue::new(&mut self.new_layer_count).range(1..=1000));
                     });
                     ui.horizontal(|ui| {
                         ui.label("FPS:");
