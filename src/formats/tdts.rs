@@ -50,7 +50,7 @@ struct TdtsTrack {
 
 #[derive(Debug, Deserialize)]
 struct TdtsFrame {
-    frame: usize,
+    frame: i32,
     data: Vec<TdtsData>,
 }
 
@@ -66,8 +66,14 @@ struct TdtsTimeTableHeader {
     names: Vec<String>,
 }
 
+/// Parse result containing timesheets and warnings
+pub struct TdtsParseResult {
+    pub timesheets: Vec<TimeSheet>,
+    pub warnings: Vec<String>,
+}
+
 /// Parse TDTS file and return multiple TimeSheets (one per timeTable)
-pub fn parse_tdts_file(path: &str) -> Result<Vec<TimeSheet>> {
+pub fn parse_tdts_file(path: &str) -> Result<TdtsParseResult> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read TDTS file: {}", path))?;
 
@@ -82,6 +88,7 @@ pub fn parse_tdts_file(path: &str) -> Result<Vec<TimeSheet>> {
         .with_context(|| "Failed to parse TDTS JSON")?;
 
     let mut timesheets = Vec::new();
+    let mut warnings = Vec::new();
 
     for time_sheet in root.time_sheets {
         let cut_name = &time_sheet.header.cut;
@@ -143,7 +150,11 @@ pub fn parse_tdts_file(path: &str) -> Result<Vec<TimeSheet>> {
                     // Collect keyframes (frame_idx, value)
                     let mut keyframes: Vec<(usize, Option<CellValue>)> = Vec::new();
                     for frame_data in &track.frames {
-                        let frame_idx = frame_data.frame;
+                        if frame_data.frame < 0 {
+                            warnings.push(format!("Negative frame {} found, skipping", frame_data.frame));
+                            continue;
+                        }
+                        let frame_idx = frame_data.frame as usize;
                         if frame_idx >= frame_count {
                             continue;
                         }
@@ -172,5 +183,5 @@ pub fn parse_tdts_file(path: &str) -> Result<Vec<TimeSheet>> {
         }
     }
 
-    Ok(timesheets)
+    Ok(TdtsParseResult { timesheets, warnings })
 }

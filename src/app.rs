@@ -147,16 +147,20 @@ impl StsApp {
             }
             "tdts" => {
                 match sts_rust::parse_tdts_file(path_str) {
-                    Ok(timesheets) => {
-                        if timesheets.is_empty() {
+                    Ok(result) => {
+                        if result.timesheets.is_empty() {
                             self.error_message = Some("No timesheets found in TDTS file".to_string());
                         } else {
-                            for ts in timesheets {
+                            for ts in result.timesheets {
                                 let doc = Document::new(self.next_doc_id, ts, None);
                                 self.next_doc_id += 1;
                                 self.documents.push(doc);
                             }
-                            self.error_message = None;
+                            if !result.warnings.is_empty() {
+                                self.error_message = Some(format!("Warning: {}", result.warnings.join(", ")));
+                            } else {
+                                self.error_message = None;
+                            }
                         }
                     }
                     Err(e) => {
