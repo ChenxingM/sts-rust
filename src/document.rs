@@ -22,6 +22,14 @@ pub enum UndoAction {
         min_frame: usize,
         old_values: Rc<Vec<Vec<Option<CellValue>>>>,
     },
+    InsertLayer {
+        index: usize,
+    },
+    DeleteLayer {
+        index: usize,
+        name: String,
+        cells: Vec<Option<CellValue>>,
+    },
 }
 
 // 编辑状态
@@ -428,6 +436,67 @@ impl Document {
         }
     }
 
+    /// 从文本解析剪贴板数据（tab分隔格式）
+    pub fn parse_clipboard_text(text: &str) -> Option<ClipboardData> {
+        let lines: Vec<&str> = text.lines().collect();
+        if lines.is_empty() {
+            return None;
+        }
+
+        let mut data = Vec::new();
+        for line in lines {
+            let row: Vec<Option<CellValue>> = line
+                .split('\t')
+                .map(|s| {
+                    let s = s.trim();
+                    if s.is_empty() {
+                        None
+                    } else if s == "-" {
+                        Some(CellValue::Same)
+                    } else {
+                        s.parse::<u32>().ok().map(CellValue::Number)
+                    }
+                })
+                .collect();
+            data.push(row);
+        }
+        Some(Rc::new(data))
+    }
+
+    /// 从系统剪贴板文本粘贴，返回是否成功
+    pub fn paste_from_text(&mut self, text: &str) -> bool {
+        if let Some(clipboard) = Self::parse_clipboard_text(text) {
+            self.clipboard = Some(clipboard);
+            self.paste_clipboard();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 在指定位置插入一列
+    pub fn insert_layer(&mut self, index: usize) {
+        self.timesheet.insert_layer(index);
+        // 限制撤销栈大小
+        if self.undo_stack.len() >= MAX_UNDO_ACTIONS {
+            self.undo_stack.pop_front();
+        }
+        self.undo_stack.push_back(UndoAction::InsertLayer { index });
+        self.is_modified = true;
+    }
+
+    /// 删除指定位置的列
+    pub fn delete_layer(&mut self, index: usize) {
+        if let Some((name, cells)) = self.timesheet.delete_layer(index) {
+            // 限制撤销栈大小
+            if self.undo_stack.len() >= MAX_UNDO_ACTIONS {
+                self.undo_stack.pop_front();
+            }
+            self.undo_stack.push_back(UndoAction::DeleteLayer { index, name, cells });
+            self.is_modified = true;
+        }
+    }
+
     pub fn undo(&mut self) {
         if let Some(action) = self.undo_stack.pop_back() {
             match action {
@@ -444,6 +513,16 @@ impl Document {
                             );
                         }
                     }
+                }
+                UndoAction::InsertLayer { index } => {
+                    // 撤销插入 = 删除该列（不记录撤销）
+                    let _ = self.timesheet.delete_layer(index);
+                }
+                UndoAction::DeleteLayer { index, name, cells } => {
+                    // 撤销删除 = 恢复该列
+                    self.timesheet.cells.insert(index, cells);
+                    self.timesheet.layer_names.insert(index, name);
+                    self.timesheet.layer_count += 1;
                 }
             }
             self.is_modified = true;
@@ -472,6 +551,12 @@ impl Document {
                 UndoAction::SetRange { old_values, .. } => {
                     std::mem::size_of::<UndoAction>() +
                     old_values.len() * old_values.first().map_or(0, |row| row.len() * std::mem::size_of::<Option<CellValue>>())
+                }
+                UndoAction::InsertLayer { .. } => std::mem::size_of::<UndoAction>(),
+                UndoAction::DeleteLayer { cells, name, .. } => {
+                    std::mem::size_of::<UndoAction>() +
+                    cells.len() * std::mem::size_of::<Option<CellValue>>() +
+                    name.len()
                 }
             }
         }).sum()
