@@ -929,6 +929,24 @@ impl StsApp {
                         doc.edit_state.editing_layer_name = Some(i);
                         doc.edit_state.editing_layer_text = layer_name.clone();
                     }
+
+                    // 列标题右键菜单
+                    resp.context_menu(|ui| {
+                        if ui.button("Insert Column Left").clicked() {
+                            doc.insert_layer(i);
+                            ui.close_menu();
+                        }
+                        if ui.button("Insert Column Right").clicked() {
+                            doc.insert_layer(i + 1);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        let can_delete = doc.timesheet.layer_count > 1;
+                        if ui.add_enabled(can_delete, egui::Button::new("Delete Column")).clicked() {
+                            doc.delete_layer(i);
+                            ui.close_menu();
+                        }
+                    });
                 }
             }
         });
@@ -1247,6 +1265,7 @@ impl StsApp {
         let mut should_copy = false;
         let mut should_cut = false;
         let mut should_paste = false;
+        let mut paste_text: Option<String> = None;
         let mut should_undo = false;
         let mut should_delete = false;
         let mut should_save = false;
@@ -1259,7 +1278,10 @@ impl StsApp {
                 match event {
                     egui::Event::Copy => should_copy = true,
                     egui::Event::Cut => should_cut = true,
-                    egui::Event::Paste(_) => should_paste = true,
+                    egui::Event::Paste(text) => {
+                        should_paste = true;
+                        paste_text = Some(text.clone());
+                    }
                     // Detect / and * characters for jump step (only when not editing)
                     egui::Event::Text(text) if !is_editing => {
                         if text == "/" {
@@ -1328,7 +1350,15 @@ impl StsApp {
                     doc.selection_state.selection_end = None;
                 }
             } else if should_paste {
-                doc.paste_clipboard();
+                // 优先从系统剪贴板文本粘贴，失败则回退到内部剪贴板
+                let pasted = if let Some(ref text) = paste_text {
+                    doc.paste_from_text(text)
+                } else {
+                    false
+                };
+                if !pasted {
+                    doc.paste_clipboard();
+                }
                 if auto_save_enabled { doc.auto_save(); }
             }
         }
@@ -1399,8 +1429,21 @@ impl StsApp {
                         did_modify = true;
                     }
 
-                    if frame + 1 < total_frames {
-                        doc.selection_state.selected_cell = Some((layer, frame + 1));
+                    // 使用 jump_step 计算新位置
+                    let new_frame = frame + doc.jump_step;
+                    // 当 step > 1 时，填充跳过的格子为 Same 标记
+                    if doc.jump_step > 1 && new_value.is_some() {
+                        for skip_frame in (frame + 1)..new_frame.min(total_frames) {
+                            let old_skip_value = doc.timesheet.get_cell(layer, skip_frame).copied();
+                            if old_skip_value != Some(CellValue::Same) {
+                                doc.push_undo_set_cell(layer, skip_frame, old_skip_value);
+                                doc.timesheet.set_cell(layer, skip_frame, Some(CellValue::Same));
+                            }
+                        }
+                        did_modify = true;
+                    }
+                    if new_frame < total_frames {
+                        doc.selection_state.selected_cell = Some((layer, new_frame));
                         doc.selection_state.auto_scroll_to_selection = true;
                     }
                 } else if i.key_pressed(egui::Key::Tab) && layer < layer_count - 1 {
