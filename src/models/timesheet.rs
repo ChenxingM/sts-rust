@@ -153,6 +153,36 @@ impl TimeSheet {
             }
         }
     }
+
+    /// 在指定位置插入一列
+    pub fn insert_layer(&mut self, index: usize) {
+        if index > self.layer_count {
+            return;
+        }
+
+        // 生成新列名
+        let new_name = Self::column_name(self.layer_count);
+
+        // 获取当前帧数以保持一致
+        let frame_count = self.total_frames();
+
+        // 插入空列数据
+        self.cells.insert(index, vec![None; frame_count]);
+        self.layer_names.insert(index, new_name);
+        self.layer_count += 1;
+    }
+
+    /// 删除指定位置的列，返回被删除的列名和数据
+    pub fn delete_layer(&mut self, index: usize) -> Option<(String, Vec<Option<CellValue>>)> {
+        if index >= self.layer_count || self.layer_count <= 1 {
+            return None;
+        }
+
+        let name = self.layer_names.remove(index);
+        let cells = self.cells.remove(index);
+        self.layer_count -= 1;
+        Some((name, cells))
+    }
 }
 
 impl Default for TimeSheet {
