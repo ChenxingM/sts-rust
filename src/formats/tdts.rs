@@ -14,55 +14,65 @@ struct TdtsRoot {
 
 #[derive(Debug, Deserialize)]
 struct TdtsTimeSheet {
+    #[serde(default)]
     header: TdtsHeader,
-    #[serde(rename = "timeTables")]
+    #[serde(rename = "timeTables", default)]
     time_tables: Vec<TdtsTimeTable>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 struct TdtsHeader {
+    #[serde(default)]
     cut: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct TdtsTimeTable {
+    #[serde(default)]
     name: String,
+    #[serde(default)]
     duration: usize,
     #[serde(default)]
     fields: Vec<TdtsField>,
-    #[serde(rename = "timeTableHeaders")]
+    #[serde(rename = "timeTableHeaders", default)]
     time_table_headers: Vec<TdtsTimeTableHeader>,
 }
 
 #[derive(Debug, Deserialize)]
 struct TdtsField {
-    #[serde(rename = "fieldId")]
+    #[serde(rename = "fieldId", default)]
     field_id: u32,
+    #[serde(default)]
     tracks: Vec<TdtsTrack>,
 }
 
 #[derive(Debug, Deserialize)]
 struct TdtsTrack {
-    #[serde(rename = "trackNo")]
+    #[serde(rename = "trackNo", default)]
     track_no: usize,
+    #[serde(default)]
     frames: Vec<TdtsFrame>,
 }
 
 #[derive(Debug, Deserialize)]
 struct TdtsFrame {
+    #[serde(default)]
     frame: i32,
+    #[serde(default)]
     data: Vec<TdtsData>,
 }
 
 #[derive(Debug, Deserialize)]
 struct TdtsData {
+    #[serde(default)]
     values: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct TdtsTimeTableHeader {
-    #[serde(rename = "fieldId")]
+    #[serde(rename = "fieldId", default)]
     field_id: u32,
+    #[serde(default)]
     names: Vec<String>,
 }
 
@@ -104,17 +114,26 @@ pub fn parse_tdts_file(path: &str) -> Result<TdtsParseResult> {
                 .unwrap_or("untitled");
             let name = format!("{}->{}->{}", file_name, cut_name, time_table.name);
 
-            // Find field with fieldId = 4
-            let tracks = time_table.fields.iter()
-                .find(|f| f.field_id == 4)
-                .map(|f| &f.tracks);
+            // Try to find matching field and header by fieldId
+            // Priority: fieldId 4 (CELL), then fieldId 0 (セル), then first available
+            let field_ids_to_try = [4u32, 0, 3, 5, 1, 2];
 
-            // Find names with fieldId = 4
-            let names = time_table.time_table_headers.iter()
-                .find(|h| h.field_id == 4)
-                .map(|h| &h.names);
+            let mut found_field = None;
+            for &fid in &field_ids_to_try {
+                let tracks = time_table.fields.iter()
+                    .find(|f| f.field_id == fid)
+                    .map(|f| &f.tracks);
+                let names = time_table.time_table_headers.iter()
+                    .find(|h| h.field_id == fid)
+                    .map(|h| &h.names);
 
-            if let (Some(tracks), Some(names)) = (tracks, names) {
+                if let (Some(t), Some(n)) = (tracks, names) {
+                    found_field = Some((t, n));
+                    break;
+                }
+            }
+
+            if let Some((tracks, names)) = found_field {
                 let layer_count = tracks.len().max(names.len());
                 let frame_count = time_table.duration;
 
@@ -141,8 +160,13 @@ pub fn parse_tdts_file(path: &str) -> Result<TdtsParseResult> {
                 }
 
                 // Parse frame data
-                for track in tracks {
-                    let layer_idx = track.track_no;
+                for (idx, track) in tracks.iter().enumerate() {
+                    // Use track_no if available, otherwise use index
+                    let layer_idx = if track.track_no > 0 || idx == 0 {
+                        track.track_no
+                    } else {
+                        idx
+                    };
                     if layer_idx >= layer_count {
                         continue;
                     }
