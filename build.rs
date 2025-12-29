@@ -19,14 +19,17 @@ fn main() {
 fn generate_build_info() {
     use std::time::SystemTime;
 
-    // Get current date in YYYYMMDD format
+    // Get current date in YYYYMMDD format (UTC+8 for China timezone)
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
         .as_secs();
 
+    // Add 8 hours offset for UTC+8 (China Standard Time)
+    let local_time = now + (8 * 3600);
+
     // Convert to YYYYMMDD format
-    let current_date = format_date_yyyymmdd(now);
+    let current_date = format_date_yyyymmdd(local_time);
 
     // Read or create build number file
     let build_file = Path::new(".build_number");
