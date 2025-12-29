@@ -41,6 +41,8 @@ impl AboutDialog {
                     ui.add_space(10.0);
                     ui.label(format!("Version: {}", env!("CARGO_PKG_VERSION")));
                     ui.add_space(5.0);
+                    ui.label(format!("Build: {}", env!("BUILD_INFO")));
+                    ui.add_space(5.0);
                     ui.label("Animation Timesheet Editor");
                     ui.add_space(10.0);
                     ui.label("Written by Ma Chenxing © 2025");
