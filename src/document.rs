@@ -483,6 +483,66 @@ impl Document {
         }
         self.undo_stack.push_back(UndoAction::InsertLayer { index });
         self.is_modified = true;
+
+        // 调整可能受列插入影响的状态索引
+        self.adjust_selection_for_insert(index);
+        self.adjust_editing_for_insert(index);
+        self.adjust_context_menu_for_insert(index);
+    }
+
+    /// 调整选择状态的索引（列插入后）
+    fn adjust_selection_for_insert(&mut self, inserted_index: usize) {
+        // 调整选中的单元格索引
+        if let Some((layer, frame)) = self.selection_state.selected_cell {
+            if layer >= inserted_index {
+                self.selection_state.selected_cell = Some((layer + 1, frame));
+            }
+        }
+
+        // 调整选择范围索引
+        if let Some((start_layer, start_frame)) = self.selection_state.selection_start {
+            if start_layer >= inserted_index {
+                self.selection_state.selection_start = Some((start_layer + 1, start_frame));
+            }
+        }
+        if let Some((end_layer, end_frame)) = self.selection_state.selection_end {
+            if end_layer >= inserted_index {
+                self.selection_state.selection_end = Some((end_layer + 1, end_frame));
+            }
+        }
+    }
+
+    /// 调整编辑状态的索引（列插入后）
+    fn adjust_editing_for_insert(&mut self, inserted_index: usize) {
+        // 调整单元格编辑状态索引
+        if let Some((layer, frame)) = self.edit_state.editing_cell {
+            if layer >= inserted_index {
+                self.edit_state.editing_cell = Some((layer + 1, frame));
+            }
+        }
+
+        // 调整列名编辑状态索引
+        if let Some(layer) = self.edit_state.editing_layer_name {
+            if layer >= inserted_index {
+                self.edit_state.editing_layer_name = Some(layer + 1);
+            }
+        }
+    }
+
+    /// 调整上下文菜单状态的索引（列插入后）
+    fn adjust_context_menu_for_insert(&mut self, inserted_index: usize) {
+        if let Some((layer, frame)) = self.context_menu.pos {
+            if layer >= inserted_index {
+                self.context_menu.pos = Some((layer + 1, frame));
+            }
+        }
+
+        // 调整上下文菜单的选择范围
+        if let Some(((start_layer, start_frame), (end_layer, end_frame))) = self.context_menu.selection {
+            let new_start_layer = if start_layer >= inserted_index { start_layer + 1 } else { start_layer };
+            let new_end_layer = if end_layer >= inserted_index { end_layer + 1 } else { end_layer };
+            self.context_menu.selection = Some(((new_start_layer, start_frame), (new_end_layer, end_frame)));
+        }
     }
 
     /// 删除指定位置的列
@@ -494,6 +554,66 @@ impl Document {
             }
             self.undo_stack.push_back(UndoAction::DeleteLayer { index, name, cells });
             self.is_modified = true;
+
+            // 清理可能指向被删除列的状态
+            self.clear_selection_if_layer_affected(index);
+            self.clear_editing_if_layer_affected(index);
+            self.clear_context_menu_if_layer_affected(index);
+        }
+    }
+
+    /// 清理选择状态（如果受列删除影响）
+    fn clear_selection_if_layer_affected(&mut self, deleted_index: usize) {
+        // 如果选中的单元格在被删除的列或之后，清除选择
+        if let Some((layer, _)) = self.selection_state.selected_cell {
+            if layer >= deleted_index {
+                self.selection_state.selected_cell = None;
+            }
+        }
+
+        // 清除选择范围（如果涉及被删除的列）
+        let should_clear_range = if let Some((start_layer, _)) = self.selection_state.selection_start {
+            start_layer >= deleted_index
+        } else {
+            false
+        } || if let Some((end_layer, _)) = self.selection_state.selection_end {
+            end_layer >= deleted_index
+        } else {
+            false
+        };
+
+        if should_clear_range {
+            self.selection_state.selection_start = None;
+            self.selection_state.selection_end = None;
+        }
+    }
+
+    /// 清理编辑状态（如果受列删除影响）
+    fn clear_editing_if_layer_affected(&mut self, deleted_index: usize) {
+        // 清除单元格编辑状态
+        if let Some((layer, _)) = self.edit_state.editing_cell {
+            if layer >= deleted_index {
+                self.edit_state.editing_cell = None;
+                self.edit_state.editing_text.clear();
+            }
+        }
+
+        // 清除列名编辑状态
+        if let Some(layer) = self.edit_state.editing_layer_name {
+            if layer >= deleted_index {
+                self.edit_state.editing_layer_name = None;
+                self.edit_state.editing_layer_text.clear();
+            }
+        }
+    }
+
+    /// 清理上下文菜单状态（如果受列删除影响）
+    fn clear_context_menu_if_layer_affected(&mut self, deleted_index: usize) {
+        if let Some((layer, _)) = self.context_menu.pos {
+            if layer >= deleted_index {
+                self.context_menu.pos = None;
+                self.context_menu.selection = None;
+            }
         }
     }
 

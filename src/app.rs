@@ -873,6 +873,10 @@ impl StsApp {
         let page_col_width = 36.0;
         let layer_count = doc.timesheet.layer_count;
 
+        // 用于延迟执行的列操作
+        let mut pending_insert: Option<usize> = None;
+        let mut pending_delete: Option<usize> = None;
+
         // 表头
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
@@ -933,23 +937,42 @@ impl StsApp {
                     // 列标题右键菜单
                     resp.context_menu(|ui| {
                         if ui.button("Insert Column Left").clicked() {
-                            doc.insert_layer(i);
+                            pending_insert = Some(i);
                             ui.close_menu();
                         }
                         if ui.button("Insert Column Right").clicked() {
-                            doc.insert_layer(i + 1);
+                            pending_insert = Some(i + 1);
                             ui.close_menu();
                         }
                         ui.separator();
                         let can_delete = doc.timesheet.layer_count > 1;
                         if ui.add_enabled(can_delete, egui::Button::new("Delete Column")).clicked() {
-                            doc.delete_layer(i);
+                            pending_delete = Some(i);
                             ui.close_menu();
                         }
                     });
                 }
             }
         });
+
+        // 执行延迟的列操作（在渲染循环外执行）
+        let doc = &mut self.documents[doc_idx];
+        if let Some(index) = pending_insert {
+            doc.insert_layer(index);
+            if auto_save_enabled {
+                doc.auto_save();
+            }
+            // 列操作后立即返回，让下一帧重新渲染
+            return;
+        }
+        if let Some(index) = pending_delete {
+            doc.delete_layer(index);
+            if auto_save_enabled {
+                doc.auto_save();
+            }
+            // 列操作后立即返回，让下一帧重新渲染
+            return;
+        }
 
         ui.separator();
 
