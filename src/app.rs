@@ -14,6 +14,7 @@ pub struct StsApp {
     pub next_doc_id: usize,
     pub active_doc_id: Option<usize>,
     pub show_new_dialog: bool,
+    pub new_dialog_focus_name: bool,
     pub closing_doc_id: Option<usize>,
     pub new_name: String,
     pub new_framerate: u32,
@@ -49,6 +50,7 @@ impl Default for StsApp {
             next_doc_id: 0,
             active_doc_id: None,
             show_new_dialog: false,
+            new_dialog_focus_name: false,
             closing_doc_id: None,
             new_name: "sheet1".to_string(),
             new_framerate: 24,
@@ -433,6 +435,7 @@ impl eframe::App for StsApp {
         ctx.input(|i| {
             if i.modifiers.ctrl && i.key_pressed(egui::Key::N) {
                 self.show_new_dialog = true;
+                self.new_dialog_focus_name = true;
             }
             if i.modifiers.ctrl && i.key_pressed(egui::Key::O) {
                 self.open_document();
@@ -458,6 +461,7 @@ impl eframe::App for StsApp {
                 ui.menu_button("File", |ui| {
                     if ui.button("New (Ctrl+N)").clicked() {
                         self.show_new_dialog = true;
+                        self.new_dialog_focus_name = true;
                         ui.close_menu();
                     }
 
@@ -642,7 +646,22 @@ impl eframe::App for StsApp {
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Name:");
-                        ui.text_edit_singleline(&mut self.new_name);
+                        let response = ui.text_edit_singleline(&mut self.new_name);
+                        // 对话框刚打开时请求焦点
+                        if self.new_dialog_focus_name {
+                            response.request_focus();
+                            self.new_dialog_focus_name = false;
+                        }
+                        // 每次获得焦点时全选文本
+                        if response.gained_focus() {
+                            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), response.id) {
+                                state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                                    egui::text::CCursor::new(0),
+                                    egui::text::CCursor::new(self.new_name.chars().count()),
+                                )));
+                                state.store(ui.ctx(), response.id);
+                            }
+                        }
                     });
                     ui.horizontal(|ui| {
                         ui.label("Layers:");
