@@ -60,6 +60,7 @@ impl CellColors {
 }
 
 /// 渲染单个单元格
+/// `allow_new_interaction`: 是否允许开始新的交互（如开始拖拽），用于防止事件穿透到非活跃窗口
 #[inline]
 pub fn render_cell(
     ui: &mut egui::Ui,
@@ -71,6 +72,7 @@ pub fn render_cell(
     pointer_pos: Option<egui::Pos2>,
     pointer_down: bool,
     colors: &CellColors,
+    allow_new_interaction: bool,
 ) {
     let is_selected = doc.selection_state.selected_cell == Some((layer_idx, frame_idx));
     let is_editing = doc.edit_state.editing_cell == Some((layer_idx, frame_idx));
@@ -156,8 +158,8 @@ pub fn render_cell(
         if !doc.is_cell_in_selection(layer_idx, frame_idx) {
             doc.selection_state.selected_cell = Some((layer_idx, frame_idx));
         }
-    } else {
-        // 左键拖拽选择
+    } else if allow_new_interaction {
+        // 左键拖拽选择 - 只有在允许新交互时才开始拖拽
         if let Some(pos) = pointer_pos {
             if pointer_down && cell_rect.contains(pos) {
                 if !doc.selection_state.is_dragging {
@@ -176,7 +178,7 @@ pub fn render_cell(
         }
     }
 
-    // 拖拽中：检查指针是否在当前格子内
+    // 拖拽中：检查指针是否在当前格子内（已经在拖拽中的窗口可以继续）
     if doc.selection_state.is_dragging && pointer_down {
         if let Some(pos) = pointer_pos {
             if cell_rect.contains(pos) {

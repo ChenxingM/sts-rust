@@ -1057,6 +1057,9 @@ impl StsApp {
             (i.pointer.interact_pos(), i.pointer.primary_down())
         });
 
+        // 只有当指针在当前窗口内时，才允许开始新的交互（防止事件穿透）
+        let allow_new_interaction = ui.ui_contains_pointer();
+
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show_rows(ui, row_height, total_frames, |ui, row_range| {
@@ -1099,7 +1102,7 @@ impl StsApp {
 
                         // 单元格渲染
                         for layer_idx in 0..layer_count {
-                            render_cell(ui, doc, layer_idx, frame_idx, col_width, row_height, pointer_pos, pointer_down, &colors);
+                            render_cell(ui, doc, layer_idx, frame_idx, col_width, row_height, pointer_pos, pointer_down, &colors, allow_new_interaction);
                         }
                     });
                 }
