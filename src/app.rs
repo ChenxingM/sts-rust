@@ -309,7 +309,7 @@ impl StsApp {
     }
 
     fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
-        let visuals = match theme_mode {
+        let mut visuals = match theme_mode {
             ThemeMode::Light => egui::Visuals::light(),
             ThemeMode::Dark => egui::Visuals::dark(),
             ThemeMode::System => {
@@ -321,6 +321,16 @@ impl StsApp {
                 }
             }
         };
+
+        // 阴影在窗口正下方
+        visuals.window_shadow = egui::epaint::Shadow {
+            offset: egui::vec2(0.0, 10.0),
+            blur: 15.0,
+            spread: 10.0,
+            color: egui::Color32::from_black_alpha(96),
+        };
+        visuals.popup_shadow = visuals.window_shadow;
+
         ctx.set_visuals(visuals);
     }
 }
