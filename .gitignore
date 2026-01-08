@@ -21,3 +21,4 @@ examples/
 upx-4.2.4-win64/
 
 *.exe
+nul
