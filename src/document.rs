@@ -39,6 +39,8 @@ pub struct EditState {
     // 使用 String 但初始容量更小
     pub editing_text: String,
     pub editing_layer_text: String,
+    // 批量编辑时保存的选区范围 (min_layer, min_frame, max_layer, max_frame)
+    pub batch_edit_range: Option<(usize, usize, usize, usize)>,
 }
 
 impl Default for EditState {
@@ -49,6 +51,7 @@ impl Default for EditState {
             // 初始不分配内存
             editing_text: String::new(),
             editing_layer_text: String::new(),
+            batch_edit_range: None,
         }
     }
 }
@@ -202,6 +205,33 @@ impl Document {
     pub fn start_edit(&mut self, layer: usize, frame: usize) {
         self.edit_state.editing_cell = Some((layer, frame));
         self.edit_state.editing_text.clear();
+        self.edit_state.batch_edit_range = None;
+
+        match self.timesheet.get_cell(layer, frame) {
+            Some(CellValue::Number(n)) => {
+                let mut buf = itoa::Buffer::new();
+                self.edit_state.editing_text.push_str(buf.format(*n));
+            }
+            Some(CellValue::Same) => {
+                if frame > 0 {
+                    if let Some(CellValue::Number(n)) = self.timesheet.get_cell(layer, frame - 1) {
+                        let mut buf = itoa::Buffer::new();
+                        self.edit_state.editing_text.push_str(buf.format(*n));
+                    }
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// 开始批量编辑 - 保存当前选区范围，完成编辑时会填充所有选中的单元格
+    #[inline]
+    pub fn start_batch_edit(&mut self, layer: usize, frame: usize) {
+        // 保存当前选区范围
+        self.edit_state.batch_edit_range = self.get_selection_range();
+
+        self.edit_state.editing_cell = Some((layer, frame));
+        self.edit_state.editing_text.clear();
 
         match self.timesheet.get_cell(layer, frame) {
             Some(CellValue::Number(n)) => {
@@ -223,8 +253,7 @@ impl Document {
     #[inline]
     pub fn finish_edit(&mut self, move_down: bool, record_undo: bool) {
         if let Some((layer, frame)) = self.edit_state.editing_cell {
-            let old_value = self.timesheet.get_cell(layer, frame).copied();
-
+            // 解析输入值
             let value = if self.edit_state.editing_text.trim().is_empty() {
                 if frame > 0 {
                     self.timesheet.get_cell(layer, frame - 1).copied()
@@ -237,37 +266,74 @@ impl Document {
                 None
             };
 
-            if record_undo && old_value != value {
-                self.push_undo_set_cell(layer, frame, old_value);
-                self.is_modified = true;
-            }
-
-            self.timesheet.set_cell(layer, frame, value);
-
-            if move_down {
-                let total_frames = self.timesheet.total_frames();
-                let new_frame = frame + self.jump_step;
-
-                // Fill skipped cells with Same marker (continuing the value)
-                if self.jump_step > 1 && value.is_some() {
-                    for skip_frame in (frame + 1)..new_frame.min(total_frames) {
-                        let old_skip_value = self.timesheet.get_cell(layer, skip_frame).copied();
-                        if record_undo && old_skip_value != Some(CellValue::Same) {
-                            self.push_undo_set_cell(layer, skip_frame, old_skip_value);
+            // 检查是否有批量编辑范围
+            if let Some((min_layer, min_frame, max_layer, max_frame)) = self.edit_state.batch_edit_range {
+                // 批量填充所有选中的单元格
+                if record_undo {
+                    // 保存旧值用于撤销
+                    let mut old_values = Vec::new();
+                    for l in min_layer..=max_layer {
+                        let mut old_row = Vec::new();
+                        for f in min_frame..=max_frame {
+                            old_row.push(self.timesheet.get_cell(l, f).copied());
                         }
-                        self.timesheet.set_cell(layer, skip_frame, Some(CellValue::Same));
+                        old_values.push(old_row);
+                    }
+                    self.undo_stack.push_back(UndoAction::SetRange {
+                        min_layer,
+                        min_frame,
+                        old_values: Rc::new(old_values),
+                    });
+                    self.is_modified = true;
+                }
+
+                // 填充所有选中的单元格
+                for l in min_layer..=max_layer {
+                    for f in min_frame..=max_frame {
+                        self.timesheet.set_cell(l, f, value);
                     }
                 }
 
-                if new_frame < total_frames {
-                    self.selection_state.selected_cell = Some((layer, new_frame));
-                } else if total_frames > 0 {
-                    self.selection_state.selected_cell = Some((layer, total_frames - 1));
+                // 清除选区
+                self.selection_state.selection_start = None;
+                self.selection_state.selection_end = None;
+            } else {
+                // 单个单元格编辑（原有逻辑）
+                let old_value = self.timesheet.get_cell(layer, frame).copied();
+
+                if record_undo && old_value != value {
+                    self.push_undo_set_cell(layer, frame, old_value);
+                    self.is_modified = true;
+                }
+
+                self.timesheet.set_cell(layer, frame, value);
+
+                if move_down {
+                    let total_frames = self.timesheet.total_frames();
+                    let new_frame = frame + self.jump_step;
+
+                    // Fill skipped cells with Same marker (continuing the value)
+                    if self.jump_step > 1 && value.is_some() {
+                        for skip_frame in (frame + 1)..new_frame.min(total_frames) {
+                            let old_skip_value = self.timesheet.get_cell(layer, skip_frame).copied();
+                            if record_undo && old_skip_value != Some(CellValue::Same) {
+                                self.push_undo_set_cell(layer, skip_frame, old_skip_value);
+                            }
+                            self.timesheet.set_cell(layer, skip_frame, Some(CellValue::Same));
+                        }
+                    }
+
+                    if new_frame < total_frames {
+                        self.selection_state.selected_cell = Some((layer, new_frame));
+                    } else if total_frames > 0 {
+                        self.selection_state.selected_cell = Some((layer, total_frames - 1));
+                    }
                 }
             }
 
             self.edit_state.editing_cell = None;
             self.edit_state.editing_text.clear();
+            self.edit_state.batch_edit_range = None;
         }
     }
 

@@ -1492,7 +1492,12 @@ impl StsApp {
                         for event in &i.events {
                             if let egui::Event::Text(text) = event {
                                 if text.chars().all(|c| c.is_ascii_digit()) {
-                                    doc.start_edit(layer, frame);
+                                    // 如果有选区，使用批量编辑模式
+                                    if doc.get_selection_range().is_some() {
+                                        doc.start_batch_edit(layer, frame);
+                                    } else {
+                                        doc.start_edit(layer, frame);
+                                    }
                                     doc.edit_state.editing_text = text.clone();
                                     break;
                                 }
