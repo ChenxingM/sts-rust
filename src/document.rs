@@ -1003,13 +1003,11 @@ impl Document {
         keyframe_text.push_str("\tSource Pixel Aspect Ratio\t1\r\n\tComp Pixel Aspect Ratio\t1\r\n\r\n");
 
         // Time Remap effect
-        keyframe_text.push_str("Layer\r\n");
         keyframe_text.push_str("Time Remap\r\n");
         keyframe_text.push_str("\tFrame\tseconds\t\r\n");
 
         // Collect keyframes (only when value changes)
         let mut prev_value: Option<u32> = None;
-        let mut last_frame = 0usize;
 
         for frame in 0..frame_count {
             let current_value = self.timesheet.get_actual_value(layer, frame);
@@ -1025,7 +1023,7 @@ impl Document {
                     // Time Remap value: convert cell value to seconds
                     // Cell value 1 = frame 0 in source = 0 seconds
                     let time_seconds = (value.saturating_sub(1)) as f64 / framerate;
-                    // Format with limited precision (AE uses ~7 decimal places)
+                    // Format with 7 decimal places (AE uses 7)
                     if time_seconds == 0.0 {
                         keyframe_text.push_str("0");
                     } else {
@@ -1034,7 +1032,6 @@ impl Document {
                         let trimmed = formatted.trim_end_matches('0').trim_end_matches('.');
                         keyframe_text.push_str(trimmed);
                     }
-                    last_frame = frame;
                 } else {
                     // Empty cell - output 0
                     keyframe_text.push_str("0");
@@ -1043,14 +1040,6 @@ impl Document {
                 prev_value = current_value;
             }
         }
-
-        // Add Effects section with Blinds (using match names for language independence)
-        keyframe_text.push_str("\r\nEffects\tADBE Blinds\tADBE Blinds-0001\r\n");
-        keyframe_text.push_str("\tFrame\tpercent\t\r\n");
-        keyframe_text.push_str("\t0\t0\t\r\n");
-        keyframe_text.push('\t');
-        keyframe_text.push_str(&last_frame.to_string());
-        keyframe_text.push_str("\t100\t\r\n");
 
         keyframe_text.push_str("\r\nEnd of Keyframe Data\r\n");
 
