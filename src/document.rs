@@ -983,7 +983,8 @@ impl Document {
     }
 
     /// Generate AE Time Remap keyframe data for entire column and copy to clipboard
-    pub fn copy_ae_keyframes(&self, ctx: &egui::Context, layer: usize) -> Result<(), &'static str> {
+    /// version: AE keyframe version string like "6.0", "7.0", "8.0", "9.0"
+    pub fn copy_ae_keyframes(&self, ctx: &egui::Context, layer: usize, version: &str) -> Result<(), &'static str> {
         if layer >= self.timesheet.layer_count {
             return Err("Invalid layer");
         }
@@ -993,7 +994,9 @@ impl Document {
         let mut keyframe_text = String::with_capacity(1024);
 
         // AE keyframe header (use \r\n for Windows clipboard compatibility)
-        keyframe_text.push_str("Adobe After Effects 9.0 Keyframe Data\r\n\r\n");
+        keyframe_text.push_str("Adobe After Effects ");
+        keyframe_text.push_str(version);
+        keyframe_text.push_str(" Keyframe Data\r\n\r\n");
         keyframe_text.push_str("\tUnits Per Second\t");
         keyframe_text.push_str(&(framerate as u32).to_string());
         keyframe_text.push_str("\r\n\tSource Width\t1000\r\n\tSource Height\t1000\r\n");

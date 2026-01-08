@@ -37,6 +37,54 @@ impl ThemeMode {
     }
 }
 
+/// AE Keyframe Data version
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AeKeyframeVersion {
+    V6,
+    V7,
+    V8,
+    #[default]
+    V9,
+}
+
+impl AeKeyframeVersion {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AeKeyframeVersion::V6 => "6.0",
+            AeKeyframeVersion::V7 => "7.0",
+            AeKeyframeVersion::V8 => "8.0",
+            AeKeyframeVersion::V9 => "9.0",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "6.0" => AeKeyframeVersion::V6,
+            "7.0" => AeKeyframeVersion::V7,
+            "8.0" => AeKeyframeVersion::V8,
+            _ => AeKeyframeVersion::V9,
+        }
+    }
+
+    pub fn index(&self) -> usize {
+        match self {
+            AeKeyframeVersion::V6 => 0,
+            AeKeyframeVersion::V7 => 1,
+            AeKeyframeVersion::V8 => 2,
+            AeKeyframeVersion::V9 => 3,
+        }
+    }
+
+    pub fn from_index(i: usize) -> Self {
+        match i {
+            0 => AeKeyframeVersion::V6,
+            1 => AeKeyframeVersion::V7,
+            2 => AeKeyframeVersion::V8,
+            _ => AeKeyframeVersion::V9,
+        }
+    }
+}
+
 /// Application settings (combines all settings)
 #[derive(Debug, Clone)]
 pub struct AppSettings {
@@ -47,6 +95,8 @@ pub struct AppSettings {
     pub auto_save_enabled: bool,
     // Theme settings
     pub theme_mode: ThemeMode,
+    // AE keyframe settings
+    pub ae_keyframe_version: AeKeyframeVersion,
 }
 
 impl Default for AppSettings {
@@ -56,6 +106,7 @@ impl Default for AppSettings {
             csv_encoding: CsvEncoding::Gb2312,
             auto_save_enabled: false,
             theme_mode: ThemeMode::System,
+            ae_keyframe_version: AeKeyframeVersion::V9,
         }
     }
 }
@@ -78,6 +129,9 @@ impl AppSettings {
             }
             if let Ok(theme) = hkcu.get_value::<String, _>("ThemeMode") {
                 settings.theme_mode = ThemeMode::from_str(&theme);
+            }
+            if let Ok(ae_version) = hkcu.get_value::<String, _>("AeKeyframeVersion") {
+                settings.ae_keyframe_version = AeKeyframeVersion::from_str(&ae_version);
             }
         }
 
@@ -108,6 +162,9 @@ impl AppSettings {
 
         key.set_value("ThemeMode", &self.theme_mode.as_str())
             .map_err(|e| format!("Failed to save ThemeMode: {}", e))?;
+
+        key.set_value("AeKeyframeVersion", &self.ae_keyframe_version.as_str())
+            .map_err(|e| format!("Failed to save AeKeyframeVersion: {}", e))?;
 
         Ok(())
     }

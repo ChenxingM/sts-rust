@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 use crate::document::Document;
 use crate::ui::{render_cell, CellColors, AboutDialog};
-use crate::settings::{ExportSettings, CsvEncoding, ThemeMode};
+use crate::settings::{ExportSettings, CsvEncoding, ThemeMode, AeKeyframeVersion};
 use sts_rust::TimeSheet;
 use sts_rust::models::timesheet::CellValue;
 
@@ -33,6 +33,7 @@ pub struct StsApp {
     pub temp_csv_encoding: usize, // 0: UTF-8, 1: GB2312, 2: Shift-JIS
     pub temp_auto_save_enabled: bool,
     pub temp_theme_mode: ThemeMode,
+    pub temp_ae_keyframe_version: usize, // 0: 6.0, 1: 7.0, 2: 8.0, 3: 9.0
     // 关于对话框
     pub about_dialog: AboutDialog,
 }
@@ -65,6 +66,7 @@ impl Default for StsApp {
             temp_csv_encoding: temp_encoding,
             temp_auto_save_enabled: settings.auto_save_enabled,
             temp_theme_mode: settings.theme_mode,
+            temp_ae_keyframe_version: settings.ae_keyframe_version.index(),
             settings,
             show_settings_dialog: false,
             about_dialog: AboutDialog::default(),
@@ -575,6 +577,27 @@ impl eframe::App for StsApp {
                             });
                     });
 
+                    ui.add_space(15.0);
+                    ui.heading("After Effects");
+                    ui.add_space(5.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("Keyframe version:");
+                        egui::ComboBox::from_id_salt("ae_keyframe_version")
+                            .selected_text(match self.temp_ae_keyframe_version {
+                                0 => "6.0",
+                                1 => "7.0",
+                                2 => "8.0",
+                                _ => "9.0",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.temp_ae_keyframe_version, 0, "6.0");
+                                ui.selectable_value(&mut self.temp_ae_keyframe_version, 1, "7.0");
+                                ui.selectable_value(&mut self.temp_ae_keyframe_version, 2, "8.0");
+                                ui.selectable_value(&mut self.temp_ae_keyframe_version, 3, "9.0");
+                            });
+                    });
+
                     ui.add_space(10.0);
                     ui.separator();
                     ui.add_space(5.0);
@@ -600,6 +623,7 @@ impl eframe::App for StsApp {
                 };
                 self.settings.auto_save_enabled = self.temp_auto_save_enabled;
                 self.settings.theme_mode = self.temp_theme_mode;
+                self.settings.ae_keyframe_version = AeKeyframeVersion::from_index(self.temp_ae_keyframe_version);
 
                 // Apply theme
                 Self::apply_theme(ctx, self.settings.theme_mode);
@@ -1205,7 +1229,8 @@ impl StsApp {
             } else if copy_ae_clicked {
                 // Copy AE Keyframes - use clicked cell's layer
                 if let Some((layer, _frame)) = doc.context_menu.pos {
-                    if let Err(e) = doc.copy_ae_keyframes(ctx, layer) {
+                    let ae_version = self.settings.ae_keyframe_version.as_str();
+                    if let Err(e) = doc.copy_ae_keyframes(ctx, layer, ae_version) {
                         self.error_message = Some(e.to_string());
                     } else {
                         self.error_message = Some("AE Time Remap keyframes copied".to_string());
