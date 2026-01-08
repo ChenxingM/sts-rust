@@ -757,9 +757,17 @@ impl eframe::App for StsApp {
                             ui.separator();
 
                             // 文档信息
-                            let (name, total_frames) = {
+                            let (name, total_frames, cursor_info) = {
                                 let doc = &self.documents[doc_idx];
-                                (doc.timesheet.name.clone(), doc.timesheet.total_frames())
+                                let cursor = if let Some((layer, frame)) = doc.selection_state.selected_cell {
+                                    let layer_name = doc.timesheet.layer_names.get(layer)
+                                        .map(|s| s.as_str())
+                                        .unwrap_or("?");
+                                    Some(format!("{} {}K", layer_name, frame + 1))
+                                } else {
+                                    None
+                                };
+                                (doc.timesheet.name.clone(), doc.timesheet.total_frames(), cursor)
                             };
 
                             ui.horizontal(|ui| {
@@ -768,6 +776,10 @@ impl eframe::App for StsApp {
                                 ui.label("Total Frames:");
                                 let mut frames_buf = itoa::Buffer::new();
                                 ui.label(frames_buf.format(total_frames));
+                                if let Some(ref cursor) = cursor_info {
+                                    ui.separator();
+                                    ui.label(cursor);
+                                }
                             });
 
                             ui.separator();
