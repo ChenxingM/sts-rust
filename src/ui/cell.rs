@@ -60,6 +60,8 @@ impl CellColors {
 }
 
 /// 渲染单个单元格
+/// `can_start_drag`: 是否允许开始新的拖拽（防止多窗口同时拖拽）
+/// 返回值：是否开始了新的拖拽
 #[inline]
 pub fn render_cell(
     ui: &mut egui::Ui,
@@ -71,7 +73,9 @@ pub fn render_cell(
     pointer_pos: Option<egui::Pos2>,
     pointer_down: bool,
     colors: &CellColors,
-) {
+    can_start_drag: bool,
+) -> bool {
+    let mut started_drag = false;
     let is_selected = doc.selection_state.selected_cell == Some((layer_idx, frame_idx));
     let is_editing = doc.edit_state.editing_cell == Some((layer_idx, frame_idx));
 
@@ -156,27 +160,34 @@ pub fn render_cell(
         if !doc.is_cell_in_selection(layer_idx, frame_idx) {
             doc.selection_state.selected_cell = Some((layer_idx, frame_idx));
         }
-    } else {
-        // 左键拖拽选择
-        if let Some(pos) = pointer_pos {
-            if pointer_down && cell_rect.contains(pos) {
-                if !doc.selection_state.is_dragging {
-                    // 开始拖拽
-                    doc.selection_state.is_dragging = true;
-                    doc.selection_state.selection_start = Some((layer_idx, frame_idx));
-                    doc.selection_state.selection_end = Some((layer_idx, frame_idx));
-                    doc.selection_state.selected_cell = Some((layer_idx, frame_idx));
-                    // 退出编辑模式
-                    if doc.edit_state.editing_cell.is_some() {
-                        doc.edit_state.editing_cell = None;
-                        doc.edit_state.editing_text.clear();
-                    }
-                }
+    } else if !doc.selection_state.is_dragging {
+        // 单击选择 - 使用 egui 响应系统（考虑窗口层级）
+        if cell_response.clicked() {
+            doc.selection_state.selection_start = Some((layer_idx, frame_idx));
+            doc.selection_state.selection_end = Some((layer_idx, frame_idx));
+            doc.selection_state.selected_cell = Some((layer_idx, frame_idx));
+            // 退出编辑模式
+            if doc.edit_state.editing_cell.is_some() {
+                doc.edit_state.editing_cell = None;
+                doc.edit_state.editing_text.clear();
+            }
+        }
+        // 拖拽选择开始 - 使用 egui 响应系统（考虑窗口层级）
+        if can_start_drag && cell_response.drag_started_by(egui::PointerButton::Primary) {
+            doc.selection_state.is_dragging = true;
+            doc.selection_state.selection_start = Some((layer_idx, frame_idx));
+            doc.selection_state.selection_end = Some((layer_idx, frame_idx));
+            doc.selection_state.selected_cell = Some((layer_idx, frame_idx));
+            started_drag = true;
+            // 退出编辑模式
+            if doc.edit_state.editing_cell.is_some() {
+                doc.edit_state.editing_cell = None;
+                doc.edit_state.editing_text.clear();
             }
         }
     }
 
-    // 拖拽中：检查指针是否在当前格子内
+    // 拖拽中：检查指针是否在当前格子内（只有正在拖拽的文档会处理）
     if doc.selection_state.is_dragging && pointer_down {
         if let Some(pos) = pointer_pos {
             if cell_rect.contains(pos) {
@@ -187,4 +198,6 @@ pub fn render_cell(
             }
         }
     }
+
+    started_drag
 }

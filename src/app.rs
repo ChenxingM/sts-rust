@@ -13,6 +13,7 @@ pub struct StsApp {
     pub documents: Vec<Document>,
     pub next_doc_id: usize,
     pub active_doc_id: Option<usize>,
+    pub dragging_doc_id: Option<usize>,  // 正在拖拽选择的文档ID
     pub show_new_dialog: bool,
     pub new_dialog_focus_name: bool,
     pub closing_doc_id: Option<usize>,
@@ -50,6 +51,7 @@ impl Default for StsApp {
             documents: Vec::new(),
             next_doc_id: 0,
             active_doc_id: None,
+            dragging_doc_id: None,
             show_new_dialog: false,
             new_dialog_focus_name: false,
             closing_doc_id: None,
@@ -1057,6 +1059,11 @@ impl StsApp {
             (i.pointer.interact_pos(), i.pointer.primary_down())
         });
 
+        // 判断当前文档是否可以开始新的拖拽
+        let doc_id = self.documents[doc_idx].id;
+        let can_start_drag = self.dragging_doc_id.is_none() || self.dragging_doc_id == Some(doc_id);
+        let mut any_started_drag = false;
+
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show_rows(ui, row_height, total_frames, |ui, row_range| {
@@ -1099,19 +1106,31 @@ impl StsApp {
 
                         // 单元格渲染
                         for layer_idx in 0..layer_count {
-                            render_cell(ui, doc, layer_idx, frame_idx, col_width, row_height, pointer_pos, pointer_down, &colors);
+                            if render_cell(ui, doc, layer_idx, frame_idx, col_width, row_height, pointer_pos, pointer_down, &colors, can_start_drag) {
+                                any_started_drag = true;
+                            }
                         }
                     });
                 }
             });
 
+        // 如果有新的拖拽开始，记录当前文档ID
+        if any_started_drag {
+            self.dragging_doc_id = Some(doc_id);
+        }
+
         // 鼠标释放
         let doc = &mut self.documents[doc_idx];
+        let was_dragging = doc.selection_state.is_dragging;
         ctx.input(|i| {
             if !i.pointer.primary_down() && doc.selection_state.is_dragging {
                 doc.selection_state.is_dragging = false;
             }
         });
+        // 如果当前文档结束拖拽，清除全局拖拽状态
+        if was_dragging && !doc.selection_state.is_dragging {
+            self.dragging_doc_id = None;
+        }
 
         // 右键菜单
         if let Some(_menu_pos) = doc.context_menu.pos {
