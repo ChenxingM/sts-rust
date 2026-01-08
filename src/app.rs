@@ -1091,16 +1091,17 @@ impl StsApp {
                         // Repeat 和 Reverse 只在有选择时可用
                         let repeat = ui.add_enabled(has_selection && is_single_column, egui::Button::new("Repeat...")).clicked();
                         let reverse = ui.add_enabled(has_selection && is_single_column, egui::Button::new("Reverse")).clicked();
+                        let sequence_fill = ui.button("Sequence Fill...").clicked();
 
                         ui.separator();
 
                         let copy_ae = ui.button("Copy AE Keyframes").clicked();
 
-                        (copy, cut, paste, undo, repeat, reverse, copy_ae)
+                        (copy, cut, paste, undo, repeat, reverse, sequence_fill, copy_ae)
                     }).inner
                 });
 
-            let (copy_clicked, cut_clicked, paste_clicked, undo_clicked, repeat_clicked, reverse_clicked, copy_ae_clicked) = menu_result.inner;
+            let (copy_clicked, cut_clicked, paste_clicked, undo_clicked, repeat_clicked, reverse_clicked, sequence_fill_clicked, copy_ae_clicked) = menu_result.inner;
             let menu_response = menu_result.response;
 
             let doc = &mut self.documents[doc_idx];
@@ -1174,6 +1175,14 @@ impl StsApp {
                     }
                 }
                 doc.context_menu.pos = None;
+            } else if sequence_fill_clicked {
+                // 打开 Sequence Fill 弹窗
+                if let Some((layer, frame)) = doc.context_menu.pos {
+                    doc.sequence_fill_dialog.layer = layer;
+                    doc.sequence_fill_dialog.start_frame = frame;
+                    doc.sequence_fill_dialog.open = true;
+                }
+                doc.context_menu.pos = None;
             } else if copy_ae_clicked {
                 // Copy AE Keyframes - use clicked cell's layer
                 if let Some((layer, _frame)) = doc.context_menu.pos {
@@ -1187,7 +1196,7 @@ impl StsApp {
             }
 
             // 点击菜单外部关闭
-            if !copy_clicked && !cut_clicked && !paste_clicked && !undo_clicked && !repeat_clicked && !reverse_clicked && !copy_ae_clicked {
+            if !copy_clicked && !cut_clicked && !paste_clicked && !undo_clicked && !repeat_clicked && !reverse_clicked && !sequence_fill_clicked && !copy_ae_clicked {
                 let clicked_outside = ctx.input(|i| {
                     if i.pointer.primary_clicked() {
                         if let Some(pos) = i.pointer.interact_pos() {
@@ -1273,6 +1282,74 @@ impl StsApp {
             }
         }
 
+        // Sequence Fill 弹窗
+        let doc = &mut self.documents[doc_idx];
+        if doc.sequence_fill_dialog.open {
+            let mut should_execute = false;
+            let mut should_cancel = false;
+
+            egui::Window::new("Sequence Fill")
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut doc.sequence_fill_dialog.open)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Start value:");
+                        ui.add(egui::DragValue::new(&mut doc.sequence_fill_dialog.start_value).range(0..=9999));
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("End value:");
+                        ui.add(egui::DragValue::new(&mut doc.sequence_fill_dialog.end_value).range(0..=9999));
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Hold frames:");
+                        ui.add(egui::DragValue::new(&mut doc.sequence_fill_dialog.hold_frames).range(1..=100));
+                    });
+
+                    // 预览信息
+                    let value_count = if doc.sequence_fill_dialog.end_value >= doc.sequence_fill_dialog.start_value {
+                        doc.sequence_fill_dialog.end_value - doc.sequence_fill_dialog.start_value + 1
+                    } else {
+                        doc.sequence_fill_dialog.start_value - doc.sequence_fill_dialog.end_value + 1
+                    };
+                    let total_frames = value_count * doc.sequence_fill_dialog.hold_frames;
+                    ui.label(format!("Total: {} frames", total_frames));
+
+                    ui.separator();
+
+                    let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    ui.horizontal(|ui| {
+                        if ui.button("OK").clicked() || enter_pressed {
+                            should_execute = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            should_cancel = true;
+                        }
+                    });
+                });
+
+            if should_cancel {
+                doc.sequence_fill_dialog.open = false;
+            }
+
+            if should_execute {
+                let layer = doc.sequence_fill_dialog.layer;
+                let start_frame = doc.sequence_fill_dialog.start_frame;
+                let start_value = doc.sequence_fill_dialog.start_value;
+                let end_value = doc.sequence_fill_dialog.end_value;
+                let hold_frames = doc.sequence_fill_dialog.hold_frames;
+
+                if let Err(e) = doc.sequence_fill(layer, start_frame, start_value, end_value, hold_frames) {
+                    self.error_message = Some(e.to_string());
+                } else if auto_save_enabled {
+                    doc.auto_save();
+                }
+                doc.sequence_fill_dialog.open = false;
+            }
+        }
+
         // 检测鼠标交互，更新活跃文档
         let doc = &self.documents[doc_idx];
         if ui.ui_contains_pointer() || doc.edit_state.editing_cell.is_some() {
@@ -1291,7 +1368,7 @@ impl StsApp {
         let doc = &mut self.documents[doc_idx];
 
         // 如果有对话框打开，不处理键盘事件
-        if doc.repeat_dialog.open {
+        if doc.repeat_dialog.open || doc.sequence_fill_dialog.open {
             return;
         }
 

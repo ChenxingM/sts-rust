@@ -117,6 +117,29 @@ impl Default for RepeatDialogState {
     }
 }
 
+// 序列填充弹窗状态
+pub struct SequenceFillDialogState {
+    pub open: bool,
+    pub layer: usize,
+    pub start_frame: usize,
+    pub start_value: u32,
+    pub end_value: u32,
+    pub hold_frames: u32,  // 拍数（每个数字重复多少帧）
+}
+
+impl Default for SequenceFillDialogState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            layer: 0,
+            start_frame: 0,
+            start_value: 1,
+            end_value: 24,
+            hold_frames: 1,
+        }
+    }
+}
+
 // 剪贴板数据
 pub type ClipboardData = Rc<Vec<Vec<Option<CellValue>>>>;
 
@@ -133,6 +156,7 @@ pub struct Document {
     pub clipboard: Option<ClipboardData>,
     pub undo_stack: VecDeque<UndoAction>,
     pub repeat_dialog: RepeatDialogState,
+    pub sequence_fill_dialog: SequenceFillDialogState,
     pub jump_step: usize,  // Enter key jump step (adjustable with / and *)
 }
 
@@ -150,6 +174,7 @@ impl Document {
             clipboard: None,
             undo_stack: VecDeque::with_capacity(MAX_UNDO_ACTIONS),
             repeat_dialog: RepeatDialogState::default(),
+            sequence_fill_dialog: SequenceFillDialogState::default(),
             jump_step: 1,
         }
     }
@@ -884,6 +909,74 @@ impl Document {
         // 写入反向值
         for (i, value) in reverse_values.iter().enumerate() {
             self.timesheet.set_cell(layer, insert_start + i, *value);
+        }
+
+        Ok(())
+    }
+
+    /// 执行序列填充操作
+    /// 从 start_value 到 end_value，每个数字重复 hold_frames 帧
+    /// 例如：start=1, end=5, hold=2 -> 1122334455
+    pub fn sequence_fill(&mut self, layer: usize, start_frame: usize, start_value: u32, end_value: u32, hold_frames: u32) -> Result<(), &'static str> {
+        if hold_frames == 0 {
+            return Err("Hold frames must be at least 1");
+        }
+
+        let total_frames = self.timesheet.total_frames();
+        if start_frame >= total_frames {
+            return Err("Start frame is out of range");
+        }
+
+        // 计算需要填充的帧数
+        let value_count = if end_value >= start_value {
+            end_value - start_value + 1
+        } else {
+            start_value - end_value + 1
+        };
+        let total_fill_frames = (value_count * hold_frames) as usize;
+
+        // 限制不超出总帧数
+        let write_end = (start_frame + total_fill_frames).min(total_frames);
+        let actual_fill_frames = write_end - start_frame;
+
+        if actual_fill_frames == 0 {
+            return Err("No frames available to fill");
+        }
+
+        // 保存旧值用于撤销
+        let mut old_values = Vec::new();
+        let mut old_row = Vec::with_capacity(actual_fill_frames);
+        for frame in start_frame..write_end {
+            old_row.push(self.timesheet.get_cell(layer, frame).copied());
+        }
+        old_values.push(old_row);
+
+        self.undo_stack.push_back(UndoAction::SetRange {
+            min_layer: layer,
+            min_frame: start_frame,
+            old_values: Rc::new(old_values),
+        });
+        self.is_modified = true;
+
+        // 填充序列值
+        let mut write_frame = start_frame;
+        let step: i32 = if end_value >= start_value { 1 } else { -1 };
+        let mut current_value = start_value as i32;
+        let end_value_i32 = end_value as i32;
+
+        'outer: loop {
+            for _ in 0..hold_frames {
+                if write_frame >= write_end {
+                    break 'outer;
+                }
+                self.timesheet.set_cell(layer, write_frame, Some(CellValue::Number(current_value as u32)));
+                write_frame += 1;
+            }
+
+            if current_value == end_value_i32 {
+                break;
+            }
+            current_value += step;
         }
 
         Ok(())
