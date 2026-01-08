@@ -309,7 +309,7 @@ impl StsApp {
     }
 
     fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
-        let mut visuals = match theme_mode {
+        let visuals = match theme_mode {
             ThemeMode::Light => egui::Visuals::light(),
             ThemeMode::Dark => egui::Visuals::dark(),
             ThemeMode::System => {
@@ -321,16 +321,6 @@ impl StsApp {
                 }
             }
         };
-
-        // 减少窗口阴影，使边界更清晰
-        visuals.window_shadow = egui::epaint::Shadow {
-            offset: egui::vec2(2.0, 2.0),
-            blur: 4.0,
-            spread: 0.0,
-            color: egui::Color32::from_black_alpha(60),
-        };
-        visuals.popup_shadow = visuals.window_shadow;
-
         ctx.set_visuals(visuals);
     }
 }
@@ -1053,13 +1043,9 @@ impl StsApp {
 
         ui.spacing_mut().item_spacing.y = 0.0;
 
-        // 只有当指针在当前窗口内时才处理交互，避免事件穿透到下层窗口
-        let window_has_pointer = ui.ui_contains_pointer();
-        let (pointer_pos, pointer_down) = if window_has_pointer {
-            ui.input(|i| (i.pointer.interact_pos(), i.pointer.primary_down()))
-        } else {
-            (None, false)
-        };
+        let (pointer_pos, pointer_down) = ui.input(|i| {
+            (i.pointer.interact_pos(), i.pointer.primary_down())
+        });
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
