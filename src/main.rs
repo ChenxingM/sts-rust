@@ -11,15 +11,31 @@ use app::StsApp;
 fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
 
-    // 尝试加载 Windows 系统中文字体
-    let font_paths = [
+    // 根据平台选择中文字体路径
+    #[cfg(target_os = "windows")]
+    let font_paths: &[&str] = &[
         "C:\\Windows\\Fonts\\msyh.ttc",      // Microsoft YaHei
         "C:\\Windows\\Fonts\\simhei.ttf",    // SimHei
         "C:\\Windows\\Fonts\\simsun.ttc",    // SimSun
     ];
 
+    #[cfg(target_os = "macos")]
+    let font_paths: &[&str] = &[
+        "/System/Library/Fonts/PingFang.ttc",           // PingFang SC (苹方)
+        "/System/Library/Fonts/STHeiti Light.ttc",      // Heiti SC (黑体)
+        "/System/Library/Fonts/STHeiti Medium.ttc",     // Heiti SC Medium
+        "/Library/Fonts/Arial Unicode.ttf",             // Arial Unicode
+    ];
+
+    #[cfg(target_os = "linux")]
+    let font_paths: &[&str] = &[
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+    ];
+
     let mut font_loaded = false;
-    for font_path in &font_paths {
+    for font_path in font_paths {
         if let Ok(font_data) = std::fs::read(font_path) {
             fonts.font_data.insert(
                 "chinese".to_owned(),

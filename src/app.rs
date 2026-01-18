@@ -445,13 +445,13 @@ impl eframe::App for StsApp {
             }
         }
 
-        // 全局快捷键
+        // 全局快捷键 (使用 command 修饰符：macOS 上为 Cmd，Windows/Linux 上为 Ctrl)
         ctx.input(|i| {
-            if i.modifiers.ctrl && i.key_pressed(egui::Key::N) {
+            if i.modifiers.command && i.key_pressed(egui::Key::N) {
                 self.show_new_dialog = true;
                 self.new_dialog_focus_name = true;
             }
-            if i.modifiers.ctrl && i.key_pressed(egui::Key::O) {
+            if i.modifiers.command && i.key_pressed(egui::Key::O) {
                 self.open_document();
             }
         });
@@ -473,13 +473,14 @@ impl eframe::App for StsApp {
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
-                    if ui.button("New (Ctrl+N)").clicked() {
+                    let shortcut_modifier = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl+" };
+                    if ui.button(format!("New ({shortcut_modifier}N)")).clicked() {
                         self.show_new_dialog = true;
                         self.new_dialog_focus_name = true;
                         ui.close_menu();
                     }
 
-                    if ui.button("Open... (Ctrl+O)").clicked() {
+                    if ui.button(format!("Open... ({shortcut_modifier}O)")).clicked() {
                         self.open_document();
                         ui.close_menu();
                     }
@@ -1479,11 +1480,11 @@ impl StsApp {
                 }
             }
 
-            if i.modifiers.ctrl && i.key_pressed(egui::Key::Z) && !i.modifiers.shift {
+            if i.modifiers.command && i.key_pressed(egui::Key::Z) && !i.modifiers.shift {
                 should_undo = true;
             }
 
-            if i.modifiers.ctrl && i.key_pressed(egui::Key::S) {
+            if i.modifiers.command && i.key_pressed(egui::Key::S) {
                 should_save = true;
             }
 

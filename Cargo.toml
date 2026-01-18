@@ -65,3 +65,13 @@ strip = true
 
 [profile.dev]
 opt-level = 1
+
+[package.metadata.bundle]
+name = "STS"
+identifier = "com.sts.app"
+icon = ["icon.icns"]
+version = "3.0.0"
+copyright = "Copyright © 2024"
+category = "public.app-category.graphics-design"
+short_description = "Animation Timesheet Editor"
+long_description = "A cross-platform animation timesheet editor supporting multiple formats including CSV, STS, XDTS, and After Effects keyframes."
