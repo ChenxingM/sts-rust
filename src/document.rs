@@ -1,46 +1,48 @@
 //! Document module - handles individual document state and operations
 
 use eframe::egui;
-use std::collections::VecDeque;
+use std::collections::{VecDeque, HashMap};
+use std::path::PathBuf;
 use std::rc::Rc;
 use sts_rust::TimeSheet;
 use sts_rust::models::timesheet::CellValue;
 
-// 撤销栈限制
 pub const MAX_UNDO_ACTIONS: usize = 100;
 
-// 撤销操作类型
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum LayerType {
+    Cel,      
+    Pan,      
+    Opacity,  
+}
+
+impl Default for LayerType {
+    fn default() -> Self { Self::Cel }
+}
+
 #[derive(Clone)]
 pub enum UndoAction {
-    SetCell {
-        layer: usize,
-        frame: usize,
-        old_value: Option<CellValue>,
-    },
-    SetRange {
-        min_layer: usize,
-        min_frame: usize,
-        old_values: Rc<Vec<Vec<Option<CellValue>>>>,
-    },
-    InsertLayer {
-        index: usize,
-    },
-    DeleteLayer {
-        index: usize,
-        name: String,
+    SetCell { layer: usize, frame: usize, old_value: Option<CellValue> },
+    SetRange { min_layer: usize, min_frame: usize, old_values: Rc<Vec<Vec<Option<CellValue>>>> },
+    InsertLayer { index: usize },
+    DeleteLayer { 
+        index: usize, 
+        name: String, 
         cells: Vec<Option<CellValue>>,
+        layer_type: Option<LayerType>,
+        layer_folder: Option<PathBuf>,
     },
 }
 
-// 编辑状态
 pub struct EditState {
     pub editing_cell: Option<(usize, usize)>,
     pub editing_layer_name: Option<usize>,
-    // 使用 String 但初始容量更小
     pub editing_text: String,
     pub editing_layer_text: String,
-    // 批量编辑时保存的选区范围 (min_layer, min_frame, max_layer, max_frame)
     pub batch_edit_range: Option<(usize, usize, usize, usize)>,
+    
+    pub renaming_document: bool,
+    pub rename_doc_buffer: String,
 }
 
 impl Default for EditState {
@@ -48,21 +50,23 @@ impl Default for EditState {
         Self {
             editing_cell: None,
             editing_layer_name: None,
-            // 初始不分配内存
             editing_text: String::new(),
             editing_layer_text: String::new(),
             batch_edit_range: None,
+            renaming_document: false,
+            rename_doc_buffer: String::new(),
         }
     }
 }
 
-// 选择状态
 pub struct SelectionState {
     pub selected_cell: Option<(usize, usize)>,
     pub selection_start: Option<(usize, usize)>,
     pub selection_end: Option<(usize, usize)>,
     pub is_dragging: bool,
     pub auto_scroll_to_selection: bool,
+    pub is_fill_dragging: bool,
+    pub fill_source_range: Option<(usize, usize, usize, usize)>,
 }
 
 impl Default for SelectionState {
@@ -73,11 +77,12 @@ impl Default for SelectionState {
             selection_end: None,
             is_dragging: false,
             auto_scroll_to_selection: false,
+            is_fill_dragging: false,
+            fill_source_range: None,
         }
     }
 }
 
-// 上下文菜单状态
 pub struct ContextMenuState {
     pub pos: Option<(usize, usize)>,
     pub screen_pos: egui::Pos2,
@@ -85,65 +90,63 @@ pub struct ContextMenuState {
 }
 
 impl Default for ContextMenuState {
-    fn default() -> Self {
-        Self {
-            pos: None,
-            screen_pos: egui::Pos2::ZERO,
-            selection: None,
-        }
-    }
+    fn default() -> Self { Self { pos: None, screen_pos: egui::Pos2::ZERO, selection: None } }
 }
 
-// Repeat 弹窗状态
 pub struct RepeatDialogState {
     pub open: bool,
     pub layer: usize,
     pub start_frame: usize,
     pub end_frame: usize,
-    pub repeat_count: u32,
+    pub repeat_count_str: String,
     pub repeat_until_end: bool,
 }
 
 impl Default for RepeatDialogState {
+    fn default() -> Self { Self { open: false, layer: 0, start_frame: 0, end_frame: 0, repeat_count_str: "1".to_string(), repeat_until_end: false } }
+}
+
+pub struct SequenceFillDialogState {
+    pub open: bool,
+    pub layer: usize,
+    pub start_frame: usize,
+    pub start_value_str: String,
+    pub end_value_str: String,
+    pub hold_frames_str: String,
+}
+
+impl Default for SequenceFillDialogState {
+    fn default() -> Self { Self { open: false, layer: 0, start_frame: 0, start_value_str: "1".to_string(), end_value_str: "24".to_string(), hold_frames_str: "1".to_string() } }
+}
+
+pub struct MotionCurveDialogState {
+    pub open: bool,
+    pub layer: usize,
+    pub start_frame: usize,
+    pub end_frame: usize,
+    pub start_val_str: String,
+    pub total_drawings_str: String,
+    pub p1: egui::Pos2,
+    pub p2: egui::Pos2,
+}
+
+impl Default for MotionCurveDialogState {
     fn default() -> Self {
         Self {
             open: false,
             layer: 0,
             start_frame: 0,
             end_frame: 0,
-            repeat_count: 1,
-            repeat_until_end: false,
+            start_val_str: "1".to_string(),
+            total_drawings_str: "5".to_string(),
+            p1: egui::pos2(0.25, 0.25),
+            p2: egui::pos2(0.75, 0.75),
         }
     }
 }
 
-// 序列填充弹窗状态
-pub struct SequenceFillDialogState {
-    pub open: bool,
-    pub layer: usize,
-    pub start_frame: usize,
-    pub start_value: u32,
-    pub end_value: u32,
-    pub hold_frames: u32,  // 拍数（每个数字重复多少帧）
-}
-
-impl Default for SequenceFillDialogState {
-    fn default() -> Self {
-        Self {
-            open: false,
-            layer: 0,
-            start_frame: 0,
-            start_value: 1,
-            end_value: 24,
-            hold_frames: 1,
-        }
-    }
-}
-
-// 剪贴板数据
 pub type ClipboardData = Rc<Vec<Vec<Option<CellValue>>>>;
 
-// 文档结构
 pub struct Document {
     pub id: usize,
     pub timesheet: Box<TimeSheet>,
@@ -155,897 +158,901 @@ pub struct Document {
     pub context_menu: ContextMenuState,
     pub clipboard: Option<ClipboardData>,
     pub undo_stack: VecDeque<UndoAction>,
+    
     pub repeat_dialog: RepeatDialogState,
     pub sequence_fill_dialog: SequenceFillDialogState,
-    pub jump_step: usize,  // Enter key jump step (adjustable with / and *)
+    pub motion_curve_dialog: MotionCurveDialogState,
+    
+    pub reference_image_dir: Option<std::path::PathBuf>,
+
+    pub show_player: bool,
+    pub player_selected_layer: usize,
+    
+    pub layer_folders: HashMap<usize, PathBuf>,
+    pub layer_types: HashMap<usize, LayerType>,
+    
+    pub jump_step: usize,
 }
 
 impl Document {
     pub fn new(id: usize, timesheet: TimeSheet, file_path: Option<String>) -> Self {
         Self {
-            id,
-            timesheet: Box::new(timesheet),
+            id, 
+            timesheet: Box::new(timesheet), 
             file_path: file_path.map(|s| s.into_boxed_str()),
-            is_modified: false,
+            is_modified: false, 
             is_open: true,
-            edit_state: EditState::default(),
-            selection_state: SelectionState::default(),
+            edit_state: EditState::default(), 
+            selection_state: SelectionState::default(), 
             context_menu: ContextMenuState::default(),
-            clipboard: None,
+            clipboard: None, 
             undo_stack: VecDeque::with_capacity(MAX_UNDO_ACTIONS),
-            repeat_dialog: RepeatDialogState::default(),
+            repeat_dialog: RepeatDialogState::default(), 
             sequence_fill_dialog: SequenceFillDialogState::default(),
+            motion_curve_dialog: MotionCurveDialogState::default(),
+            
+            show_player: false,
+            player_selected_layer: 0,
+            
+            layer_folders: HashMap::new(),
+            layer_types: HashMap::new(), 
+            
             jump_step: 1,
+            reference_image_dir: None,
         }
     }
 
     pub fn title(&self) -> String {
-        let base = if let Some(path) = &self.file_path {
-            format!("{} - {}", self.timesheet.name, path)
-        } else {
-            self.timesheet.name.clone()
-        };
-
-        if self.is_modified {
-            format!("{}*", base)
-        } else {
-            base
-        }
+        let base = if let Some(path) = &self.file_path { format!("{} - {}", self.timesheet.name, path) } else { self.timesheet.name.clone() };
+        if self.is_modified { format!("{}*", base) } else { base }
     }
 
     pub fn save(&mut self) -> Result<(), String> {
         if let Some(path) = &self.file_path {
             match sts_rust::write_sts_file(&self.timesheet, path) {
-                Ok(_) => {
-                    self.is_modified = false;
-                    Ok(())
-                }
+                Ok(_) => { self.is_modified = false; Ok(()) }
                 Err(e) => Err(format!("Failed to save: {}", e)),
             }
-        } else {
-            Err("No file path".to_string())
-        }
+        } else { Err("No file path".to_string()) }
     }
 
     pub fn save_as(&mut self, path: String) -> Result<(), String> {
         match sts_rust::write_sts_file(&self.timesheet, &path) {
-            Ok(_) => {
-                self.file_path = Some(path.into_boxed_str());
-                self.is_modified = false;
-                Ok(())
-            }
+            Ok(_) => { self.file_path = Some(path.into_boxed_str()); self.is_modified = false; Ok(()) }
             Err(e) => Err(format!("Failed to save: {}", e)),
         }
     }
 
-    /// Auto-save if file path exists. Saves silently (no error returned).
-    /// Sets is_modified to false after successful save.
-    pub fn auto_save(&mut self) {
-        if self.file_path.is_some() {
-            let _ = self.save();
+    pub fn auto_save(&mut self) { if self.file_path.is_some() { let _ = self.save(); } }
+
+    // ==========================================
+    // 👇 全新视觉滤镜引擎：自动翻译 A-Z 和数字 👇
+    // ==========================================
+
+    pub fn format_cell_value(&self, layer: usize, val: u32) -> String {
+        let layer_type = self.layer_types.get(&layer).copied().unwrap_or(LayerType::Cel);
+        match layer_type {
+            LayerType::Pan => {
+                if val >= 1 && val <= 26 {
+                    ((b'A' + (val as u8) - 1) as char).to_string()
+                } else {
+                    val.to_string()
+                }
+            },
+            LayerType::Opacity => val.to_string(), // 透明度直接显示数字
+            LayerType::Cel => val.to_string(),
         }
+    }
+
+    pub fn get_cell_display_string(&self, layer: usize, frame: usize) -> String {
+        match self.timesheet.get_cell(layer, frame) {
+            Some(CellValue::Number(n)) => self.format_cell_value(layer, *n),
+            Some(CellValue::Same) => "-".to_string(),
+            None => "".to_string(),
+        }
+    }
+
+    pub fn parse_cell_input(text: &str, layer_type: LayerType) -> Option<u32> {
+        let t = text.trim();
+        if t.is_empty() { return None; }
+        
+        if layer_type == LayerType::Pan && t.len() == 1 {
+            let c = t.chars().next().unwrap().to_ascii_uppercase();
+            if c >= 'A' && c <= 'Z' {
+                return Some((c as u32) - 'A' as u32 + 1);
+            }
+        }
+        t.parse::<u32>().ok()
+    }
+
+    pub fn parse_math_input(&self, layer_type: LayerType, input: &str, base_value: i32) -> Option<u32> {
+        let text = input.trim(); 
+        if text.is_empty() { return None; }
+        
+        let first = text.chars().next()?;
+        match first {
+            '+' | '-' | '*' | '/' => {
+                if let Ok(op) = text[1..].trim().parse::<f64>() {
+                    let base = base_value as f64;
+                    let res = match first { '+' => base + op, '-' => (base - op).max(0.0), '*' => base * op, '/' => if op!=0.0 { base/op } else { base }, _ => base };
+                    Some(res.round() as u32)
+                } else { None }
+            }, 
+            _ => Self::parse_cell_input(text, layer_type)
+        }
+    }
+
+    pub fn clear_all_cells(&mut self) {
+        let total_frames = self.timesheet.total_frames();
+        let layer_count = self.timesheet.layer_count;
+        let mut old_values = Vec::new();
+        for l in 0..layer_count {
+            let mut row = Vec::new();
+            for f in 0..total_frames { row.push(self.timesheet.get_cell(l, f).copied()); }
+            old_values.push(row);
+        }
+        self.undo_stack.push_back(UndoAction::SetRange { min_layer: 0, min_frame: 0, old_values: Rc::new(old_values) });
+        for l in 0..layer_count { for f in 0..total_frames { self.timesheet.set_cell(l, f, None); } }
+        self.is_modified = true;
+    }
+
+    fn resolve_actual_value(&self, layer: usize, frame: usize) -> Option<u32> {
+        for f in (0..=frame).rev() {
+            match self.timesheet.get_cell(layer, f) {
+                Some(CellValue::Number(n)) => return Some(*n),
+                Some(CellValue::Same) => continue, 
+                None => return None, 
+            }
+        }
+        None
+    }
+
+    fn scan_upwards_for_numbers(&self, layer: usize, start_search_frame: usize) -> Vec<u32> {
+        let mut samples = Vec::new();
+        if start_search_frame == 0 { return samples; }
+
+        let mut f = start_search_frame - 1;
+        loop {
+            if let Some(v) = self.resolve_actual_value(layer, f) {
+                samples.push(v);
+            } else {
+                break;
+            }
+            if f == 0 { break; }
+            f -= 1;
+        }
+        samples.reverse();
+        samples
+    }
+
+    fn generate_smart_sequence(samples: &[u32], count_to_fill: usize) -> Vec<Option<CellValue>> {
+        let sample_len = samples.len();
+        let mut result = Vec::with_capacity(count_to_fill);
+        
+        if sample_len == 0 {
+            for _ in 0..count_to_fill { result.push(None); }
+            return result;
+        }
+
+        if sample_len == 1 {
+            let val = samples[0];
+            for _ in 0..count_to_fill { result.push(Some(CellValue::Number(val))); }
+            return result;
+        }
+
+        let step1 = samples[1] as i32 - samples[0] as i32;
+        let mut is_arithmetic = true;
+        for i in 2..sample_len {
+            if (samples[i] as i32 - samples[i-1] as i32) != step1 {
+                is_arithmetic = false; break;
+            }
+        }
+
+        if is_arithmetic {
+            let mut current = samples.last().unwrap().clone() as i32;
+            for _ in 0..count_to_fill {
+                current += step1;
+                result.push(Some(CellValue::Number(current.max(0) as u32)));
+            }
+            return result;
+        }
+
+        let mut groups: Vec<(u32, usize)> = Vec::new();
+        let mut cur_val = samples[0];
+        let mut cur_cnt = 1;
+        for &val in samples.iter().skip(1) {
+            if val == cur_val { cur_cnt += 1; }
+            else {
+                groups.push((cur_val, cur_cnt));
+                cur_val = val;
+                cur_cnt = 1;
+            }
+        }
+        groups.push((cur_val, cur_cnt));
+
+        if groups.len() >= 2 {
+            let step = groups[1].0 as i32 - groups[0].0 as i32;
+            let hold = groups[0].1;
+            
+            let consistent_step = groups.windows(2).all(|w| (w[1].0 as i32 - w[0].0 as i32) == step);
+            let consistent_hold = groups.iter().take(groups.len()-1).all(|g| g.1 == hold);
+
+            if consistent_step && consistent_hold {
+                let mut current = groups.last().unwrap().0;
+                let mut current_filled = groups.last().unwrap().1;
+                
+                for _ in 0..count_to_fill {
+                    if current_filled < hold {
+                        result.push(Some(CellValue::Number(current)));
+                        current_filled += 1;
+                    } else {
+                        current = (current as i32 + step).max(0) as u32;
+                        result.push(Some(CellValue::Number(current)));
+                        current_filled = 1;
+                    }
+                }
+                return result;
+            }
+        }
+
+        for i in 0..count_to_fill {
+            result.push(Some(CellValue::Number(samples[i % sample_len])));
+        }
+        result
     }
 
     #[inline]
     pub fn start_edit(&mut self, layer: usize, frame: usize) {
         self.edit_state.editing_cell = Some((layer, frame));
         self.edit_state.editing_text.clear();
-        self.edit_state.batch_edit_range = None;
-
-        match self.timesheet.get_cell(layer, frame) {
-            Some(CellValue::Number(n)) => {
-                let mut buf = itoa::Buffer::new();
-                self.edit_state.editing_text.push_str(buf.format(*n));
-            }
-            Some(CellValue::Same) => {
-                if frame > 0 {
-                    if let Some(CellValue::Number(n)) = self.timesheet.get_cell(layer, frame - 1) {
-                        let mut buf = itoa::Buffer::new();
-                        self.edit_state.editing_text.push_str(buf.format(*n));
-                    }
+        
+        if self.edit_state.batch_edit_range.is_none() {
+            if let Some((min_l, min_f, max_l, max_f)) = self.get_selection_range() {
+                if layer >= min_l && layer <= max_l && frame >= min_f && frame <= max_f {
+                     self.edit_state.batch_edit_range = Some((min_l, min_f, max_l, max_f));
                 }
             }
-            None => {}
+        }
+        if let Some(val) = self.resolve_actual_value(layer, frame) {
+            // [修改] 开始编辑时，自动还原成 A-Z 字母供用户修改
+            self.edit_state.editing_text.push_str(&self.format_cell_value(layer, val));
         }
     }
 
-    /// 开始批量编辑 - 保存当前选区范围，完成编辑时会填充所有选中的单元格
-    #[inline]
-    pub fn start_batch_edit(&mut self, layer: usize, frame: usize) {
-        // 保存当前选区范围
-        self.edit_state.batch_edit_range = self.get_selection_range();
-
-        self.edit_state.editing_cell = Some((layer, frame));
-        self.edit_state.editing_text.clear();
-
-        match self.timesheet.get_cell(layer, frame) {
-            Some(CellValue::Number(n)) => {
-                let mut buf = itoa::Buffer::new();
-                self.edit_state.editing_text.push_str(buf.format(*n));
-            }
-            Some(CellValue::Same) => {
-                if frame > 0 {
-                    if let Some(CellValue::Number(n)) = self.timesheet.get_cell(layer, frame - 1) {
-                        let mut buf = itoa::Buffer::new();
-                        self.edit_state.editing_text.push_str(buf.format(*n));
-                    }
-                }
-            }
-            None => {}
-        }
-    }
+    #[inline] pub fn start_batch_edit(&mut self, l: usize, f: usize) { self.edit_state.batch_edit_range = self.get_selection_range(); self.start_edit(l, f); }
 
     #[inline]
     pub fn finish_edit(&mut self, move_down: bool, record_undo: bool) {
         if let Some((layer, frame)) = self.edit_state.editing_cell {
-            // 解析输入值
-            let value = if self.edit_state.editing_text.trim().is_empty() {
-                if frame > 0 {
-                    self.timesheet.get_cell(layer, frame - 1).copied()
-                } else {
-                    None
-                }
-            } else if let Ok(n) = self.edit_state.editing_text.trim().parse::<u32>() {
-                Some(CellValue::Number(n))
-            } else {
-                None
-            };
+            let text = self.edit_state.editing_text.trim();
+            let mut operation = None; 
+            let mut direct_value = None;
+            let mut inherit_above = false;
+            let layer_type = self.layer_types.get(&layer).copied().unwrap_or(LayerType::Cel);
 
-            // 检查是否有批量编辑范围
-            if let Some((min_layer, min_frame, max_layer, max_frame)) = self.edit_state.batch_edit_range {
-                // 批量填充所有选中的单元格
-                if record_undo {
-                    // 保存旧值用于撤销
-                    let mut old_values = Vec::new();
-                    for l in min_layer..=max_layer {
-                        let mut old_row = Vec::new();
-                        for f in min_frame..=max_frame {
-                            old_row.push(self.timesheet.get_cell(l, f).copied());
-                        }
-                        old_values.push(old_row);
+            if text.is_empty() {
+                inherit_above = true;
+            } else {
+                let first_char = text.chars().next().unwrap();
+                if ['+', '-', '*', '/'].contains(&first_char) {
+                    if let Ok(operand) = text[1..].trim().parse::<f64>() {
+                        operation = Some((first_char, operand));
                     }
-                    self.undo_stack.push_back(UndoAction::SetRange {
-                        min_layer,
-                        min_frame,
-                        old_values: Rc::new(old_values),
-                    });
+                } else {
+                    let mut math_split = None;
+                    for (i, c) in text.chars().enumerate() {
+                        if i > 0 && ['+', '-', '*', '/'].contains(&c) {
+                            math_split = Some((i, c)); break;
+                        }
+                    }
+                    if let Some((idx, op)) = math_split {
+                        let left = text[0..idx].trim().parse::<f64>();
+                        let right = text[idx+1..].trim().parse::<f64>();
+                        if let (Ok(l), Ok(r)) = (left, right) {
+                            let res = match op { '+' => l+r, '-' => (l-r).max(0.0), '*' => l*r, '/' => if r!=0.0{l/r}else{l}, _ => l };
+                            direct_value = Some(CellValue::Number(res.round() as u32));
+                        }
+                    } 
+                    if direct_value.is_none() { 
+                        // [修改] 支持输入 A-Z
+                        if let Some(n) = Self::parse_cell_input(text, layer_type) { 
+                            direct_value = Some(CellValue::Number(n)); 
+                        } 
+                    }
+                }
+            }
+
+            if let Some((min_layer, min_frame, max_layer, max_frame)) = self.edit_state.batch_edit_range {
+                if record_undo {
+                    let mut old = Vec::new();
+                    for l in min_layer..=max_layer { let mut r = Vec::new(); for f in min_frame..=max_frame { r.push(self.timesheet.get_cell(l, f).copied()); } old.push(r); }
+                    self.undo_stack.push_back(UndoAction::SetRange { min_layer, min_frame, old_values: Rc::new(old) });
                     self.is_modified = true;
                 }
-
-                // 填充所有选中的单元格
                 for l in min_layer..=max_layer {
                     for f in min_frame..=max_frame {
-                        self.timesheet.set_cell(l, f, value);
+                        if inherit_above {
+                            if f > 0 { let v = self.timesheet.get_cell(l, f - 1).copied(); self.timesheet.set_cell(l, f, v); } 
+                            else { self.timesheet.set_cell(l, f, None); }
+                        } else if let Some((op, operand)) = operation {
+                            let cur = self.resolve_actual_value(l, f).unwrap_or(0) as f64;
+                            let res = match op { '+' => cur+operand, '-' => (cur-operand).max(0.0), '*' => cur*operand, '/' => if operand!=0.0{cur/operand}else{cur}, _ => cur };
+                            self.timesheet.set_cell(l, f, Some(CellValue::Number(res.round() as u32)));
+                        } else if let Some(val) = direct_value { self.timesheet.set_cell(l, f, Some(val)); } 
+                        else { self.timesheet.set_cell(l, f, None); }
                     }
                 }
-
-                // 清除选区
-                self.selection_state.selection_start = None;
-                self.selection_state.selection_end = None;
+                self.selection_state.selection_start = None; self.selection_state.selection_end = None;
             } else {
-                // 单个单元格编辑（原有逻辑）
-                let old_value = self.timesheet.get_cell(layer, frame).copied();
+                let new_cell = if inherit_above { if frame > 0 { Some(CellValue::Same) } else { None } } 
+                else if let Some((op, operand)) = operation {
+                    let cur = self.resolve_actual_value(layer, frame).unwrap_or(0) as f64;
+                    let res = match op { '+' => cur+operand, '-' => (cur-operand).max(0.0), '*' => cur*operand, '/' => if operand!=0.0{cur/operand}else{cur}, _ => cur };
+                    Some(CellValue::Number(res.round() as u32))
+                } else if let Some(val) = direct_value { Some(val) } else { self.timesheet.get_cell(layer, frame).copied() };
 
-                if record_undo && old_value != value {
-                    self.push_undo_set_cell(layer, frame, old_value);
-                    self.is_modified = true;
-                }
-
-                self.timesheet.set_cell(layer, frame, value);
+                let old = self.timesheet.get_cell(layer, frame).copied();
+                if record_undo && old != new_cell { self.push_undo_set_cell(layer, frame, old); self.is_modified = true; }
+                self.timesheet.set_cell(layer, frame, new_cell);
 
                 if move_down {
-                    let total_frames = self.timesheet.total_frames();
-                    let new_frame = frame + self.jump_step;
-
-                    // Fill skipped cells with Same marker (continuing the value)
-                    if self.jump_step > 1 && value.is_some() {
-                        for skip_frame in (frame + 1)..new_frame.min(total_frames) {
-                            let old_skip_value = self.timesheet.get_cell(layer, skip_frame).copied();
-                            if record_undo && old_skip_value != Some(CellValue::Same) {
-                                self.push_undo_set_cell(layer, skip_frame, old_skip_value);
-                            }
-                            self.timesheet.set_cell(layer, skip_frame, Some(CellValue::Same));
+                    let total = self.timesheet.total_frames(); let new_f = frame + self.jump_step;
+                    if self.jump_step > 1 && new_cell.is_some() {
+                        let limit = new_f.min(total);
+                        for sf in (frame + 1)..limit {
+                            let old_s = self.timesheet.get_cell(layer, sf).copied();
+                            if record_undo && old_s != Some(CellValue::Same) { self.push_undo_set_cell(layer, sf, old_s); }
+                            self.timesheet.set_cell(layer, sf, Some(CellValue::Same));
                         }
                     }
-
-                    if new_frame < total_frames {
-                        self.selection_state.selected_cell = Some((layer, new_frame));
-                    } else if total_frames > 0 {
-                        self.selection_state.selected_cell = Some((layer, total_frames - 1));
-                    }
+                    if new_f < total { self.selection_state.selected_cell = Some((layer, new_f)); self.selection_state.auto_scroll_to_selection = true; }
                 }
             }
-
-            self.edit_state.editing_cell = None;
-            self.edit_state.editing_text.clear();
-            self.edit_state.batch_edit_range = None;
+            self.edit_state.editing_cell = None; self.edit_state.editing_text.clear(); self.edit_state.batch_edit_range = None;
         }
     }
 
-    #[inline(always)]
-    pub fn is_cell_in_selection(&self, layer: usize, frame: usize) -> bool {
-        if let (Some((start_layer, start_frame)), Some((end_layer, end_frame))) =
-            (self.selection_state.selection_start, self.selection_state.selection_end) {
-            let min_layer = start_layer.min(end_layer);
-            let max_layer = start_layer.max(end_layer);
-            let min_frame = start_frame.min(end_frame);
-            let max_frame = start_frame.max(end_frame);
-
-            layer >= min_layer && layer <= max_layer &&
-            frame >= min_frame && frame <= max_frame
-        } else {
-            false
-        }
-    }
-
-    #[inline]
-    pub fn get_selection_range(&self) -> Option<(usize, usize, usize, usize)> {
-        if let (Some((start_layer, start_frame)), Some((end_layer, end_frame))) =
-            (self.selection_state.selection_start, self.selection_state.selection_end) {
-            let min_layer = start_layer.min(end_layer);
-            let max_layer = start_layer.max(end_layer);
-            let min_frame = start_frame.min(end_frame);
-            let max_frame = start_frame.max(end_frame);
-            Some((min_layer, min_frame, max_layer, max_frame))
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    pub fn copy_selection(&mut self, ctx: &egui::Context) {
-        let range = self.get_selection_range();
-
-        if let Some((min_layer, min_frame, max_layer, max_frame)) = range {
-            let row_count = max_layer - min_layer + 1;
-            let col_count = max_frame - min_frame + 1;
-
-            // 预分配容量以减少内存重新分配
-            let mut clipboard_data = Vec::with_capacity(row_count);
-            let mut clipboard_text = String::with_capacity(row_count * col_count * 4);
-
-            for layer in min_layer..=max_layer {
-                let mut row = Vec::with_capacity(col_count);
-
-                for frame in min_frame..=max_frame {
-                    let cell = self.timesheet.get_cell(layer, frame).copied();
-                    row.push(cell);
-
-                    if frame > min_frame {
-                        clipboard_text.push('\t');
-                    }
-                    match cell {
-                        Some(CellValue::Number(n)) => {
-                            let mut buf = itoa::Buffer::new();
-                            clipboard_text.push_str(buf.format(n));
-                        }
-                        Some(CellValue::Same) => clipboard_text.push('-'),
-                        None => {}
-                    }
+    pub fn apply_smart_fill(&mut self) {
+        if !self.selection_state.is_fill_dragging { return; }
+        if let (Some((src_min_l, src_min_f, src_max_l, src_max_f)), 
+                Some((curr_min_l, _curr_min_f, curr_max_l, curr_max_f))) = 
+                (self.selection_state.fill_source_range, self.get_selection_range()) 
+        {
+            if curr_max_f > src_max_f && src_min_l == curr_min_l && src_max_l == curr_max_l {
+                let fill_start = src_max_f + 1;
+                let fill_end = curr_max_f;
+                let mut old = Vec::new();
+                for l in src_min_l..=src_max_l {
+                    let mut r = Vec::new();
+                    for f in fill_start..=fill_end { r.push(self.timesheet.get_cell(l, f).copied()); }
+                    old.push(r);
                 }
-                clipboard_data.push(row);
-                if layer < max_layer {
-                    clipboard_text.push('\n');
-                }
-            }
-
-            if !clipboard_data.is_empty() {
-                self.clipboard = Some(Rc::new(clipboard_data));
-                ctx.output_mut(|o| o.copied_text = clipboard_text);
-            }
-        }
-    }
-
-    pub fn cut_selection(&mut self, ctx: &egui::Context) {
-        self.copy_selection(ctx);
-
-        if let Some((min_layer, min_frame, max_layer, max_frame)) = self.get_selection_range() {
-            let mut old_values = Vec::new();
-            for layer in min_layer..=max_layer {
-                let mut old_row = Vec::new();
-                for frame in min_frame..=max_frame {
-                    old_row.push(self.timesheet.get_cell(layer, frame).copied());
-                }
-                old_values.push(old_row);
-            }
-
-            self.undo_stack.push_back(UndoAction::SetRange {
-                min_layer,
-                min_frame,
-                old_values: Rc::new(old_values),
-            });
-            self.is_modified = true;
-
-            for layer in min_layer..=max_layer {
-                for frame in min_frame..=max_frame {
-                    self.timesheet.set_cell(layer, frame, None);
-                }
-            }
-        }
-    }
-
-    pub fn delete_selection(&mut self) {
-        if let Some((min_layer, min_frame, max_layer, max_frame)) = self.get_selection_range() {
-            let mut old_values = Vec::new();
-            for layer in min_layer..=max_layer {
-                let mut old_row = Vec::new();
-                for frame in min_frame..=max_frame {
-                    old_row.push(self.timesheet.get_cell(layer, frame).copied());
-                }
-                old_values.push(old_row);
-            }
-
-            self.undo_stack.push_back(UndoAction::SetRange {
-                min_layer,
-                min_frame,
-                old_values: Rc::new(old_values),
-            });
-            self.is_modified = true;
-
-            for layer in min_layer..=max_layer {
-                for frame in min_frame..=max_frame {
-                    self.timesheet.set_cell(layer, frame, None);
-                }
-            }
-        } else if let Some((layer, frame)) = self.selection_state.selected_cell {
-            let old_value = self.timesheet.get_cell(layer, frame).copied();
-            self.push_undo_set_cell(layer, frame, old_value);
-            self.is_modified = true;
-            self.timesheet.set_cell(layer, frame, None);
-        }
-    }
-
-    pub fn paste_clipboard(&mut self) {
-        if let Some((start_layer, start_frame)) = self.selection_state.selected_cell {
-            if let Some(ref clipboard) = self.clipboard {
-                let mut old_values = Vec::new();
-                for (layer_offset, row) in clipboard.iter().enumerate() {
-                    let target_layer = start_layer + layer_offset;
-                    let mut old_row = Vec::new();
-                    for (frame_offset, _) in row.iter().enumerate() {
-                        let target_frame = start_frame + frame_offset;
-                        old_row.push(self.timesheet.get_cell(target_layer, target_frame).copied());
-                    }
-                    old_values.push(old_row);
-                }
-
-                self.undo_stack.push_back(UndoAction::SetRange {
-                    min_layer: start_layer,
-                    min_frame: start_frame,
-                    old_values: Rc::new(old_values),
-                });
+                self.undo_stack.push_back(UndoAction::SetRange { min_layer: src_min_l, min_frame: fill_start, old_values: Rc::new(old) });
                 self.is_modified = true;
 
-                for (layer_offset, row) in clipboard.iter().enumerate() {
-                    let target_layer = start_layer + layer_offset;
-                    for (frame_offset, cell) in row.iter().enumerate() {
-                        let target_frame = start_frame + frame_offset;
-                        self.timesheet.set_cell(target_layer, target_frame, *cell);
+                for layer in src_min_l..=src_max_l {
+                    let mut samples = Vec::new();
+                    for f in src_min_f..=src_max_f { 
+                        if let Some(v) = self.resolve_actual_value(layer, f) {
+                            samples.push(v);
+                        }
+                    }
+                    
+                    let total_fill = fill_end - fill_start + 1;
+                    
+                    let generated = Self::generate_smart_sequence(&samples, total_fill);
+
+                    for (i, val) in generated.into_iter().enumerate() {
+                        self.timesheet.set_cell(layer, fill_start + i, val);
                     }
                 }
             }
         }
+        self.selection_state.is_fill_dragging = false;
+        self.selection_state.fill_source_range = None;
     }
 
-    /// 从文本解析剪贴板数据（tab分隔格式）
-    pub fn parse_clipboard_text(text: &str) -> Option<ClipboardData> {
-        let lines: Vec<&str> = text.lines().collect();
-        if lines.is_empty() {
-            return None;
+    pub fn smart_fill_auto(&mut self) -> Result<(), &'static str> {
+        let (layer, start_frame, end_frame) = self.check_single_column_selection()?;
+        
+        let mut keyframes = Vec::new();
+        let mut has_trailing_empty = false;
+
+        // 👇 核心意图判断：如果选区的最后一帧是空的，说明用户是在“往下拖拽拓展”，强制走序列推演！
+        if self.timesheet.get_cell(layer, end_frame).is_none() {
+            has_trailing_empty = true;
         }
 
-        let mut data = Vec::new();
-        for line in lines {
-            let row: Vec<Option<CellValue>> = line
-                .split('\t')
-                .map(|s| {
-                    let s = s.trim();
-                    if s.is_empty() {
-                        None
-                    } else if s == "-" {
-                        Some(CellValue::Same)
-                    } else {
-                        s.parse::<u32>().ok().map(CellValue::Number)
-                    }
-                })
-                .collect();
-            data.push(row);
-        }
-        Some(Rc::new(data))
-    }
-
-    /// 从系统剪贴板文本粘贴，返回是否成功
-    pub fn paste_from_text(&mut self, text: &str) -> bool {
-        if let Some(clipboard) = Self::parse_clipboard_text(text) {
-            self.clipboard = Some(clipboard);
-            self.paste_clipboard();
-            true
-        } else {
-            false
-        }
-    }
-
-    /// 在指定位置插入一列
-    pub fn insert_layer(&mut self, index: usize) {
-        self.timesheet.insert_layer(index);
-        // 限制撤销栈大小
-        if self.undo_stack.len() >= MAX_UNDO_ACTIONS {
-            self.undo_stack.pop_front();
-        }
-        self.undo_stack.push_back(UndoAction::InsertLayer { index });
-        self.is_modified = true;
-
-        // 调整可能受列插入影响的状态索引
-        self.adjust_selection_for_insert(index);
-        self.adjust_editing_for_insert(index);
-        self.adjust_context_menu_for_insert(index);
-    }
-
-    /// 调整选择状态的索引（列插入后）
-    fn adjust_selection_for_insert(&mut self, inserted_index: usize) {
-        // 调整选中的单元格索引
-        if let Some((layer, frame)) = self.selection_state.selected_cell {
-            if layer >= inserted_index {
-                self.selection_state.selected_cell = Some((layer + 1, frame));
+        // 收集所有明确填写的数字
+        for f in start_frame..=end_frame {
+            if let Some(CellValue::Number(n)) = self.timesheet.get_cell(layer, f) {
+                keyframes.push((f, *n));
             }
         }
 
-        // 调整选择范围索引
-        if let Some((start_layer, start_frame)) = self.selection_state.selection_start {
-            if start_layer >= inserted_index {
-                self.selection_state.selection_start = Some((start_layer + 1, start_frame));
-            }
-        }
-        if let Some((end_layer, end_frame)) = self.selection_state.selection_end {
-            if end_layer >= inserted_index {
-                self.selection_state.selection_end = Some((end_layer + 1, end_frame));
-            }
-        }
-    }
-
-    /// 调整编辑状态的索引（列插入后）
-    fn adjust_editing_for_insert(&mut self, inserted_index: usize) {
-        // 调整单元格编辑状态索引
-        if let Some((layer, frame)) = self.edit_state.editing_cell {
-            if layer >= inserted_index {
-                self.edit_state.editing_cell = Some((layer + 1, frame));
-            }
-        }
-
-        // 调整列名编辑状态索引
-        if let Some(layer) = self.edit_state.editing_layer_name {
-            if layer >= inserted_index {
-                self.edit_state.editing_layer_name = Some(layer + 1);
-            }
-        }
-    }
-
-    /// 调整上下文菜单状态的索引（列插入后）
-    fn adjust_context_menu_for_insert(&mut self, inserted_index: usize) {
-        if let Some((layer, frame)) = self.context_menu.pos {
-            if layer >= inserted_index {
-                self.context_menu.pos = Some((layer + 1, frame));
-            }
-        }
-
-        // 调整上下文菜单的选择范围
-        if let Some(((start_layer, start_frame), (end_layer, end_frame))) = self.context_menu.selection {
-            let new_start_layer = if start_layer >= inserted_index { start_layer + 1 } else { start_layer };
-            let new_end_layer = if end_layer >= inserted_index { end_layer + 1 } else { end_layer };
-            self.context_menu.selection = Some(((new_start_layer, start_frame), (new_end_layer, end_frame)));
-        }
-    }
-
-    /// 删除指定位置的列
-    pub fn delete_layer(&mut self, index: usize) {
-        if let Some((name, cells)) = self.timesheet.delete_layer(index) {
-            // 限制撤销栈大小
-            if self.undo_stack.len() >= MAX_UNDO_ACTIONS {
-                self.undo_stack.pop_front();
-            }
-            self.undo_stack.push_back(UndoAction::DeleteLayer { index, name, cells });
+        // 🚀 [引擎 A] 线性补间模式：必须不是拖拽拓展，且至少有两个关键帧
+        if !has_trailing_empty && keyframes.len() >= 2 {
+            let mut old_rows = Vec::new();
+            let mut row = Vec::new();
+            for f in start_frame..=end_frame { row.push(self.timesheet.get_cell(layer, f).copied()); }
+            old_rows.push(row);
+            self.undo_stack.push_back(UndoAction::SetRange { min_layer: layer, min_frame: start_frame, old_values: Rc::new(old_rows) });
             self.is_modified = true;
 
-            // 清理可能指向被删除列的状态
-            self.clear_selection_if_layer_affected(index);
-            self.clear_editing_if_layer_affected(index);
-            self.clear_context_menu_if_layer_affected(index);
-        }
-    }
+            for window in keyframes.windows(2) {
+                let (f1, v1) = window[0];
+                let (f2, v2) = window[1];
+                let duration = (f2 - f1) as f64;
+                
+                let mut prev_val = v1;
 
-    /// 清理选择状态（如果受列删除影响）
-    fn clear_selection_if_layer_affected(&mut self, deleted_index: usize) {
-        // 如果选中的单元格在被删除的列或之后，清除选择
-        if let Some((layer, _)) = self.selection_state.selected_cell {
-            if layer >= deleted_index {
-                self.selection_state.selected_cell = None;
-            }
-        }
+                for f in (f1 + 1)..f2 {
+                    // 👇 核心尊重机制：看看这个格子是不是空的
+                    let is_empty = self.timesheet.get_cell(layer, f).is_none();
 
-        // 清除选择范围（如果涉及被删除的列）
-        let should_clear_range = if let Some((start_layer, _)) = self.selection_state.selection_start {
-            start_layer >= deleted_index
-        } else {
-            false
-        } || if let Some((end_layer, _)) = self.selection_state.selection_end {
-            end_layer >= deleted_index
-        } else {
-            false
-        };
+                    if is_empty {
+                        // 只有格子是空的，才进行插值计算并填入！
+                        let progress = (f - f1) as f64 / duration;
+                        let current_val = (v1 as f64 + (v2 as f64 - v1 as f64) * progress).round() as u32;
 
-        if should_clear_range {
-            self.selection_state.selection_start = None;
-            self.selection_state.selection_end = None;
-        }
-    }
-
-    /// 清理编辑状态（如果受列删除影响）
-    fn clear_editing_if_layer_affected(&mut self, deleted_index: usize) {
-        // 清除单元格编辑状态
-        if let Some((layer, _)) = self.edit_state.editing_cell {
-            if layer >= deleted_index {
-                self.edit_state.editing_cell = None;
-                self.edit_state.editing_text.clear();
-            }
-        }
-
-        // 清除列名编辑状态
-        if let Some(layer) = self.edit_state.editing_layer_name {
-            if layer >= deleted_index {
-                self.edit_state.editing_layer_name = None;
-                self.edit_state.editing_layer_text.clear();
-            }
-        }
-    }
-
-    /// 清理上下文菜单状态（如果受列删除影响）
-    fn clear_context_menu_if_layer_affected(&mut self, deleted_index: usize) {
-        if let Some((layer, _)) = self.context_menu.pos {
-            if layer >= deleted_index {
-                self.context_menu.pos = None;
-                self.context_menu.selection = None;
-            }
-        }
-    }
-
-    pub fn undo(&mut self) {
-        if let Some(action) = self.undo_stack.pop_back() {
-            match action {
-                UndoAction::SetCell { layer, frame, old_value } => {
-                    self.timesheet.set_cell(layer, frame, old_value);
-                }
-                UndoAction::SetRange { min_layer, min_frame, old_values } => {
-                    for (layer_offset, row) in old_values.iter().enumerate() {
-                        for (frame_offset, value) in row.iter().enumerate() {
-                            self.timesheet.set_cell(
-                                min_layer + layer_offset,
-                                min_frame + frame_offset,
-                                *value,
-                            );
+                        if current_val != prev_val {
+                            self.timesheet.set_cell(layer, f, Some(CellValue::Number(current_val)));
+                            prev_val = current_val;
+                        } else {
+                            self.timesheet.set_cell(layer, f, Some(CellValue::Same));
+                        }
+                    } else {
+                        // 如果格子不为空（比如用户打了 "-" 或者其他数字），我们绝对不覆盖它！
+                        // 但为了后续计算准确，我们需要更新 prev_val 为它实际代表的数字
+                        if let Some(actual_val) = self.resolve_actual_value(layer, f) {
+                            prev_val = actual_val;
                         }
                     }
                 }
-                UndoAction::InsertLayer { index } => {
-                    // 撤销插入 = 删除该列（不记录撤销）
-                    let _ = self.timesheet.delete_layer(index);
-                }
-                UndoAction::DeleteLayer { index, name, cells } => {
-                    // 撤销删除 = 恢复该列
-                    self.timesheet.cells.insert(index, cells);
-                    self.timesheet.layer_names.insert(index, name);
-                    self.timesheet.layer_count += 1;
-                }
             }
-            self.is_modified = true;
+            return Ok(());
         }
-    }
 
-    #[inline]
-    pub fn push_undo_set_cell(&mut self, layer: usize, frame: usize, old_value: Option<CellValue>) {
-        // 限制撤销栈大小
-        if self.undo_stack.len() >= MAX_UNDO_ACTIONS {
-            self.undo_stack.pop_front();
+        // 🛡️ [引擎 B] 传统推演模式 (处理 1,1,2,2,3,3 往下拖的情况)
+        let mut samples = Vec::new();
+        let mut selection_has_data = false;
+
+        for f in start_frame..=end_frame {
+            if let Some(v) = self.resolve_actual_value(layer, f) {
+                samples.push(v);
+                selection_has_data = true;
+            }
         }
-        self.undo_stack.push_back(UndoAction::SetCell {
-            layer,
-            frame,
-            old_value,
-        });
-    }
 
-    // 估算撤销操作占用的内存
-    #[inline]
-    pub fn estimate_undo_memory(&self) -> usize {
-        self.undo_stack.iter().map(|action| {
-            match action {
-                UndoAction::SetCell { .. } => std::mem::size_of::<UndoAction>(),
-                UndoAction::SetRange { old_values, .. } => {
-                    std::mem::size_of::<UndoAction>() +
-                    old_values.len() * old_values.first().map_or(0, |row| row.len() * std::mem::size_of::<Option<CellValue>>())
-                }
-                UndoAction::InsertLayer { .. } => std::mem::size_of::<UndoAction>(),
-                UndoAction::DeleteLayer { cells, name, .. } => {
-                    std::mem::size_of::<UndoAction>() +
-                    cells.len() * std::mem::size_of::<Option<CellValue>>() +
-                    name.len()
-                }
-            }
-        }).sum()
-    }
+        if !selection_has_data {
+            samples = self.scan_upwards_for_numbers(layer, start_frame);
+        }
 
-    /// 检查选择是否为单列，返回 (layer, min_frame, max_frame) 或错误信息
-    pub fn check_single_column_selection(&self) -> Result<(usize, usize, usize), &'static str> {
-        if let Some((min_layer, min_frame, max_layer, max_frame)) = self.get_selection_range() {
-            if min_layer != max_layer {
-                return Err("Only single column selection is supported");
-            }
-            Ok((min_layer, min_frame, max_frame))
+        if samples.is_empty() {
+            return Err("No pattern found above or in selection");
+        }
+
+        let fill_start_frame = if !selection_has_data {
+            start_frame
         } else {
-            Err("No selection")
-        }
-    }
-
-    /// 执行重复操作
-    pub fn repeat_selection(&mut self, repeat_count: u32, repeat_until_end: bool) -> Result<(), &'static str> {
-        let (layer, start_frame, end_frame) = self.check_single_column_selection()?;
-
-        // 获取选择范围的值
-        let selection_len = end_frame - start_frame + 1;
-        let mut source_values: Vec<Option<CellValue>> = Vec::with_capacity(selection_len);
-        for frame in start_frame..=end_frame {
-            source_values.push(self.timesheet.get_cell(layer, frame).copied());
-        }
-
-        let total_frames = self.timesheet.total_frames();
-        let insert_start = end_frame + 1;
-
-        // 计算可用的帧数
-        let available_frames = total_frames.saturating_sub(insert_start);
-        if available_frames == 0 {
-            return Err("No frames available to repeat into");
-        }
-
-        // 计算需要写入的总帧数
-        let total_write_frames = if repeat_until_end {
-            // 填满所有剩余帧（包括不完整的组）
-            available_frames
-        } else {
-            // 尝试写入 repeat_count 组，但不超过可用帧数
-            let requested_frames = selection_len * repeat_count as usize;
-            requested_frames.min(available_frames)
+            let mut last_val_idx = start_frame;
+            for f in start_frame..=end_frame {
+                if self.timesheet.get_cell(layer, f).is_some() {
+                    last_val_idx = f;
+                }
+            }
+            last_val_idx + 1
         };
 
-        let write_end = insert_start + total_write_frames;
-
-        // 保存旧值用于撤销
-        let mut old_values = Vec::new();
-        let mut old_row = Vec::with_capacity(total_write_frames);
-        for frame in insert_start..write_end {
-            old_row.push(self.timesheet.get_cell(layer, frame).copied());
+        if fill_start_frame > end_frame {
+            return Err("Selection is already full");
         }
-        old_values.push(old_row);
 
-        self.undo_stack.push_back(UndoAction::SetRange {
-            min_layer: layer,
-            min_frame: insert_start,
-            old_values: Rc::new(old_values),
-        });
+        let count_to_fill = end_frame - fill_start_frame + 1;
+        let generated = Self::generate_smart_sequence(&samples, count_to_fill);
+
+        let mut old = Vec::new();
+        let mut row = Vec::new();
+        for f in fill_start_frame..=end_frame { row.push(self.timesheet.get_cell(layer, f).copied()); }
+        old.push(row);
+        self.undo_stack.push_back(UndoAction::SetRange { min_layer: layer, min_frame: fill_start_frame, old_values: Rc::new(old) });
         self.is_modified = true;
 
-        // 写入重复的值（循环写入source_values直到填满）
-        let mut write_frame = insert_start;
-        while write_frame < write_end {
-            for value in &source_values {
-                if write_frame >= write_end {
-                    break;
-                }
-                self.timesheet.set_cell(layer, write_frame, *value);
-                write_frame += 1;
-            }
+        for (i, val) in generated.into_iter().enumerate() {
+            self.timesheet.set_cell(layer, fill_start_frame + i, val);
         }
 
         Ok(())
     }
 
-    /// 执行反向操作
-    /// 反向时跳过与最后一帧相同值的所有帧，例如 111222333 -> 111222333222111
+    #[inline(always)] pub fn is_cell_in_selection(&self, l: usize, f: usize) -> bool {
+        if let (Some((sl,sf)), Some((el,ef))) = (self.selection_state.selection_start, self.selection_state.selection_end) {
+            l >= sl.min(el) && l <= sl.max(el) && f >= sf.min(ef) && f <= sf.max(ef)
+        } else { false }
+    }
+    #[inline] pub fn get_selection_range(&self) -> Option<(usize, usize, usize, usize)> {
+        if let (Some((sl,sf)), Some((el,ef))) = (self.selection_state.selection_start, self.selection_state.selection_end) {
+            Some((sl.min(el), sf.min(ef), sl.max(el), sf.max(ef)))
+        } else { None }
+    }
+    pub fn delete_selection(&mut self) {
+        if let Some((ml, mf, xl, xf)) = self.get_selection_range() {
+            let mut old = Vec::new(); for l in ml..=xl { let mut r = Vec::new(); for f in mf..=xf { r.push(self.timesheet.get_cell(l, f).copied()); } old.push(r); }
+            self.undo_stack.push_back(UndoAction::SetRange{min_layer:ml, min_frame:mf, old_values:Rc::new(old)}); self.is_modified=true;
+            for l in ml..=xl { for f in mf..=xf { self.timesheet.set_cell(l, f, None); }}
+        } else if let Some((l,f)) = self.selection_state.selected_cell {
+            let o = self.timesheet.get_cell(l,f).copied(); self.push_undo_set_cell(l,f,o); self.is_modified=true; self.timesheet.set_cell(l,f,None);
+        }
+    }
+    
+    pub fn copy_selection(&mut self, ctx: &egui::Context) { 
+        if let Some((ml, mf, xl, xf)) = self.get_selection_range() {
+            let mut txt = String::new();
+            let mut data = Vec::new();
+            for l in ml..=xl {
+                let mut row = Vec::new();
+                for f in mf..=xf {
+                    let c = self.timesheet.get_cell(l,f).copied();
+                    row.push(c);
+                    if f > mf { txt.push('\t'); }
+                    match c { 
+                        // [修改] 拷贝时带上翻译好的字母，方便在外部编辑器查看
+                        Some(CellValue::Number(n)) => txt.push_str(&self.format_cell_value(l, n)), 
+                        Some(CellValue::Same) => txt.push('-'), 
+                        _=>{} 
+                    }
+                }
+                data.push(row);
+                if l < xl { txt.push('\n'); }
+            }
+            self.clipboard = Some(Rc::new(data));
+            ctx.output_mut(|o| o.copied_text = txt);
+        }
+    }
+    pub fn cut_selection(&mut self, ctx: &egui::Context) { self.copy_selection(ctx); self.delete_selection(); }
+    pub fn paste_clipboard(&mut self) { 
+        if let Some((sl, sf)) = self.selection_state.selected_cell {
+            if let Some(cb) = &self.clipboard {
+                let mut old = Vec::new();
+                for (li, row) in cb.iter().enumerate() {
+                    let mut orow = Vec::new();
+                    for (fi, _) in row.iter().enumerate() { orow.push(self.timesheet.get_cell(sl+li, sf+fi).copied()); }
+                    old.push(orow);
+                }
+                self.undo_stack.push_back(UndoAction::SetRange{min_layer:sl, min_frame:sf, old_values:Rc::new(old)});
+                self.is_modified = true;
+                for (li, row) in cb.iter().enumerate() { for (fi, val) in row.iter().enumerate() { self.timesheet.set_cell(sl+li, sf+fi, *val); } }
+            }
+        }
+    }
+    pub fn paste_from_text(&mut self, text: &str) -> bool { if let Some(cb) = Self::parse_clipboard_text(text) { self.clipboard=Some(cb); self.paste_clipboard(); true } else { false } }
+    
+    pub fn parse_clipboard_text(text: &str) -> Option<ClipboardData> {
+        let lines: Vec<&str> = text.lines().collect(); if lines.is_empty() { return None; }
+        let mut d = Vec::new();
+        for l in lines { 
+            d.push(l.split('\t').map(|s| {
+                let s = s.trim();
+                if s.is_empty() { None }
+                else if s == "-" { Some(CellValue::Same) }
+                else {
+                    // [修改] 全局剪贴板支持自动将 A-Z 翻译成 1-26
+                    if let Ok(n) = s.parse::<u32>() {
+                        Some(CellValue::Number(n))
+                    } else if s.len() == 1 {
+                        let c = s.chars().next().unwrap().to_ascii_uppercase();
+                        if c >= 'A' && c <= 'Z' {
+                            Some(CellValue::Number((c as u32) - 'A' as u32 + 1))
+                        } else { None }
+                    } else { None }
+                }
+            }).collect()); 
+        }
+        Some(Rc::new(d))
+    }
+    
+    pub fn insert_layer(&mut self, index: usize) { 
+        self.timesheet.insert_layer(index); 
+        self.undo_stack.push_back(UndoAction::InsertLayer{index}); 
+        self.is_modified=true; 
+        self.adjust_selection_for_insert(index); 
+        self.adjust_editing_for_insert(index); 
+        self.adjust_context_menu_for_insert(index); 
+        
+        let mut new_types = HashMap::new();
+        for (k, v) in self.layer_types.drain() {
+            if k >= index { new_types.insert(k + 1, v); } else { new_types.insert(k, v); }
+        }
+        self.layer_types = new_types;
+
+        let mut new_folders = HashMap::new();
+        for (k, v) in self.layer_folders.drain() {
+            if k >= index { new_folders.insert(k + 1, v); } else { new_folders.insert(k, v); }
+        }
+        self.layer_folders = new_folders;
+    }
+    
+    pub fn delete_layer(&mut self, index: usize) { 
+        if let Some((n,c)) = self.timesheet.delete_layer(index) { 
+            let layer_type = self.layer_types.remove(&index);
+            let layer_folder = self.layer_folders.remove(&index);
+            
+            self.undo_stack.push_back(UndoAction::DeleteLayer{index, name:n, cells:c, layer_type, layer_folder}); 
+            self.is_modified=true; 
+            self.clear_selection_if_layer_affected(index); 
+            self.clear_editing_if_layer_affected(index); 
+            self.clear_context_menu_if_layer_affected(index); 
+
+            let mut new_types = HashMap::new();
+            for (k, v) in self.layer_types.drain() {
+                if k > index { new_types.insert(k - 1, v); } else { new_types.insert(k, v); }
+            }
+            self.layer_types = new_types;
+
+            let mut new_folders = HashMap::new();
+            for (k, v) in self.layer_folders.drain() {
+                if k > index { new_folders.insert(k - 1, v); } else { new_folders.insert(k, v); }
+            }
+            self.layer_folders = new_folders;
+        } 
+    }
+    
+    fn adjust_selection_for_insert(&mut self, i:usize) { if let Some((l,f))=self.selection_state.selected_cell{if l>=i{self.selection_state.selected_cell=Some((l+1,f));}} }
+    fn adjust_editing_for_insert(&mut self, i:usize) { if let Some((l,f))=self.edit_state.editing_cell{if l>=i{self.edit_state.editing_cell=Some((l+1,f));}} }
+    fn adjust_context_menu_for_insert(&mut self, _i:usize) {}
+    fn clear_selection_if_layer_affected(&mut self, i:usize) { if self.selection_state.selected_cell.map_or(false, |(l,_)| l>=i) { self.selection_state.selected_cell=None; } }
+    fn clear_editing_if_layer_affected(&mut self, i:usize) { if self.edit_state.editing_cell.map_or(false, |(l,_)| l>=i) { self.edit_state.editing_cell=None; } }
+    fn clear_context_menu_if_layer_affected(&mut self, _i:usize) {}
+    
+    pub fn undo(&mut self) { 
+        if let Some(a) = self.undo_stack.pop_back() {
+            match a {
+                UndoAction::SetCell{layer,frame,old_value} => self.timesheet.set_cell(layer,frame,old_value),
+                UndoAction::SetRange{min_layer,min_frame,old_values} => { for (l,r) in old_values.iter().enumerate() { for (f,v) in r.iter().enumerate() { self.timesheet.set_cell(min_layer+l, min_frame+f, *v); } } },
+                UndoAction::InsertLayer{index} => { 
+                    self.timesheet.delete_layer(index); 
+                    
+                    let mut new_types = HashMap::new();
+                    for (k, v) in self.layer_types.drain() {
+                        if k > index { new_types.insert(k - 1, v); } else if k < index { new_types.insert(k, v); }
+                    }
+                    self.layer_types = new_types;
+
+                    let mut new_folders = HashMap::new();
+                    for (k, v) in self.layer_folders.drain() {
+                        if k > index { new_folders.insert(k - 1, v); } else if k < index { new_folders.insert(k, v); }
+                    }
+                    self.layer_folders = new_folders;
+                },
+                UndoAction::DeleteLayer{index, name, cells, layer_type, layer_folder} => { 
+                    self.timesheet.cells.insert(index, cells); 
+                    self.timesheet.layer_names.insert(index, name); 
+                    self.timesheet.layer_count+=1; 
+                    
+                    let mut new_types = HashMap::new();
+                    for (k, v) in self.layer_types.drain() {
+                        if k >= index { new_types.insert(k + 1, v); } else { new_types.insert(k, v); }
+                    }
+                    if let Some(lt) = layer_type { new_types.insert(index, lt); }
+                    self.layer_types = new_types;
+
+                    let mut new_folders = HashMap::new();
+                    for (k, v) in self.layer_folders.drain() {
+                        if k >= index { new_folders.insert(k + 1, v); } else { new_folders.insert(k, v); }
+                    }
+                    if let Some(lf) = layer_folder { new_folders.insert(index, lf); }
+                    self.layer_folders = new_folders;
+                }
+            }
+            self.is_modified=true;
+        }
+    }
+    
+    pub fn push_undo_set_cell(&mut self, l:usize, f:usize, v:Option<CellValue>) { if self.undo_stack.len()>=MAX_UNDO_ACTIONS{self.undo_stack.pop_front();} self.undo_stack.push_back(UndoAction::SetCell{layer:l,frame:f,old_value:v}); }
+    pub fn estimate_undo_memory(&self) -> usize { 0 }
+    pub fn check_single_column_selection(&self) -> Result<(usize, usize, usize), &'static str> { if let Some((ml,mf,xl,xf))=self.get_selection_range(){ if ml!=xl{Err("Single col only")}else{Ok((ml,mf,xf))} } else { Err("No sel") } }
+    
+    pub fn repeat_selection(&mut self, count: u32, until_end: bool) -> Result<(), &'static str> { 
+        let (l, sf, ef) = self.check_single_column_selection()?;
+        let mut src = Vec::new(); for f in sf..=ef { src.push(self.timesheet.get_cell(l,f).copied()); }
+        let start = ef + 1;
+        let total = self.timesheet.total_frames();
+        let avail = total.saturating_sub(start);
+        if avail == 0 { return Err("No frames"); }
+        let write_len = if until_end { avail } else { (src.len() * count as usize).min(avail) };
+        let mut old = Vec::new(); for f in start..(start+write_len) { old.push(self.timesheet.get_cell(l,f).copied()); }
+        self.undo_stack.push_back(UndoAction::SetRange{min_layer:l, min_frame:start, old_values:Rc::new(vec![old])});
+        self.is_modified = true;
+        let mut w = start;
+        while w < start + write_len { for v in &src { if w >= start+write_len {break;} self.timesheet.set_cell(l, w, *v); w+=1; } }
+        Ok(())
+    }
+    
+    pub fn sequence_fill(&mut self, l: usize, sf: usize, sv: u32, ev: u32, h: u32) -> Result<(), &'static str> {
+        let total = self.timesheet.total_frames();
+        let count = if ev>=sv { ev-sv+1 } else { sv-ev+1 };
+        let frames = (count * h) as usize;
+        let end = (sf + frames).min(total);
+        if end <= sf { return Err("No frames"); }
+        let mut old = Vec::new(); for f in sf..end { old.push(self.timesheet.get_cell(l,f).copied()); }
+        self.undo_stack.push_back(UndoAction::SetRange{min_layer:l, min_frame:sf, old_values:Rc::new(vec![old])});
+        self.is_modified = true;
+        let mut w = sf; let step = if ev>=sv {1} else {-1}; let mut cur = sv as i32;
+        'o: loop { for _ in 0..h { if w>=end {break 'o;} self.timesheet.set_cell(l,w,Some(CellValue::Number(cur as u32))); w+=1; } if cur == ev as i32 {break;} cur += step; }
+        Ok(())
+    }
+    
+    // ==========================================
+    // 👇 AE 导出升级：完美适配透明度层 👇
+    // ==========================================
+    pub fn copy_ae_keyframes(&self, ctx: &egui::Context, l: usize, v: &str) -> Result<(), &'static str> { 
+        let fps = self.timesheet.framerate as f64;
+        let layer_type = self.layer_types.get(&l).copied().unwrap_or(LayerType::Cel);
+
+        let mut txt = format!("Adobe After Effects {} Keyframe Data\r\n\r\n\tUnits Per Second\t{}\r\n\tSource Width\t1000\r\n\tSource Height\t1000\r\n\tSource Pixel Aspect Ratio\t1\r\n\tComp Pixel Aspect Ratio\t1\r\n\r\n", v, fps as u32);
+        
+        match layer_type {
+            LayerType::Opacity => {
+                txt.push_str("Transform\tOpacity\r\n\tFrame\tpercent\t\r\n");
+                let mut prev = None;
+                for f in 0..self.timesheet.total_frames() {
+                    let cur = self.timesheet.get_actual_value(l, f);
+                    if cur.is_some() && cur != prev {
+                        txt.push_str(&format!("\t{}\t{}\t\r\n", f, cur.unwrap()));
+                        prev = cur;
+                    }
+                }
+            }
+            LayerType::Pan => {
+                // 👇 输出我们自定义格式的干净文本，专门喂给我们的 AE 脚本 👇
+                txt.push_str(&format!("STS_MARKER_DATA\r\nFPS:{}\r\n", fps));
+                let mut prev = None;
+                for f in 0..self.timesheet.total_frames() {
+                    let cur = self.timesheet.get_actual_value(l, f);
+                    if cur.is_some() && cur != prev {
+                        let val_str = self.format_cell_value(l, cur.unwrap());
+                        txt.push_str(&format!("{}\t{}\r\n", f, val_str));
+                        prev = cur;
+                    }
+                }
+            }
+            _ => { 
+                txt.push_str("Time Remap\r\n\tFrame\tseconds\t\r\n");
+                let mut prev = None;
+                for f in 0..self.timesheet.total_frames() {
+                    let cur = self.timesheet.get_actual_value(l, f);
+                    if cur != prev {
+                        let t = if let Some(val) = cur { format!("{:.7}", (val.saturating_sub(1)) as f64 / fps) } else { "0".to_string() };
+                        txt.push_str(&format!("\t{}\t{}\t\r\n", f, t.trim_end_matches('0').trim_end_matches('.')));
+                        prev = cur;
+                    }
+                }
+            }
+        }
+        
+        txt.push_str("\r\nEnd of Keyframe Data\r\n");
+        ctx.output_mut(|o| o.copied_text = txt);
+        Ok(())
+    }
+
     pub fn reverse_selection(&mut self) -> Result<(), &'static str> {
         let (layer, start_frame, end_frame) = self.check_single_column_selection()?;
-
-        let selection_len = end_frame - start_frame + 1;
-        if selection_len < 2 {
-            return Err("Selection must have at least 2 frames");
+        let mut src_values = Vec::new();
+        let mut selection_has_data = false;
+        for f in start_frame..=end_frame {
+            if self.timesheet.get_cell(layer, f).is_some() { selection_has_data = true; break; }
         }
-
-        // 获取最后一帧的值
-        let last_value = self.timesheet.get_cell(layer, end_frame).copied();
-
-        // 从 end_frame 向前找到第一个不同值的帧
-        let mut actual_end = end_frame;
-        while actual_end > start_frame {
-            let current_value = self.timesheet.get_cell(layer, actual_end - 1).copied();
-            if current_value != last_value {
-                break;
+        if selection_has_data {
+            let mut split_idx = None;
+            for f in start_frame..=end_frame { if self.timesheet.get_cell(layer, f).is_none() { split_idx = Some(f); break; } }
+            if let Some(empty_start) = split_idx {
+                let src_end = empty_start - 1;
+                for f in start_frame..=src_end { src_values.push(self.timesheet.get_cell(layer, f).copied()); }
+                src_values.reverse(); 
+                let write_count = (end_frame - empty_start + 1).min(src_values.len());
+                let mut old_rows = Vec::new();
+                for i in 0..write_count { old_rows.push(self.timesheet.get_cell(layer, empty_start + i).copied()); }
+                self.undo_stack.push_back(UndoAction::SetRange { min_layer: layer, min_frame: empty_start, old_values: Rc::new(vec![old_rows]) });
+                self.is_modified = true;
+                for i in 0..write_count { self.timesheet.set_cell(layer, empty_start + i, src_values[i]); }
+                return Ok(());
+            } else {
+                for f in start_frame..=end_frame { src_values.push(self.timesheet.get_cell(layer, f).copied()); }
+                src_values.reverse();
             }
-            actual_end -= 1;
-        }
-
-        // 如果所有帧都是相同值，无法反向
-        if actual_end <= start_frame {
-            return Err("All frames have the same value, cannot reverse");
-        }
-
-        // 收集反向值（从 actual_end - 1 到 start_frame）
-        let reverse_len = actual_end - start_frame;
-        let mut reverse_values: Vec<Option<CellValue>> = Vec::with_capacity(reverse_len);
-        for frame in (start_frame..actual_end).rev() {
-            reverse_values.push(self.timesheet.get_cell(layer, frame).copied());
-        }
-
-        let total_frames = self.timesheet.total_frames();
-        let insert_start = end_frame + 1;
-        let write_end = insert_start + reverse_len;
-
-        // 检查是否超出范围
-        if write_end > total_frames {
-            return Err("Not enough frames to reverse");
-        }
-
-        // 保存旧值用于撤销
-        let mut old_values = Vec::new();
-        let mut old_row = Vec::with_capacity(reverse_len);
-        for frame in insert_start..write_end {
-            old_row.push(self.timesheet.get_cell(layer, frame).copied());
-        }
-        old_values.push(old_row);
-
-        self.undo_stack.push_back(UndoAction::SetRange {
-            min_layer: layer,
-            min_frame: insert_start,
-            old_values: Rc::new(old_values),
-        });
-        self.is_modified = true;
-
-        // 写入反向值
-        for (i, value) in reverse_values.iter().enumerate() {
-            self.timesheet.set_cell(layer, insert_start + i, *value);
-        }
-
-        Ok(())
-    }
-
-    /// 执行序列填充操作
-    /// 从 start_value 到 end_value，每个数字重复 hold_frames 帧
-    /// 例如：start=1, end=5, hold=2 -> 1122334455
-    pub fn sequence_fill(&mut self, layer: usize, start_frame: usize, start_value: u32, end_value: u32, hold_frames: u32) -> Result<(), &'static str> {
-        if hold_frames == 0 {
-            return Err("Hold frames must be at least 1");
-        }
-
-        let total_frames = self.timesheet.total_frames();
-        if start_frame >= total_frames {
-            return Err("Start frame is out of range");
-        }
-
-        // 计算需要填充的帧数
-        let value_count = if end_value >= start_value {
-            end_value - start_value + 1
         } else {
-            start_value - end_value + 1
-        };
-        let total_fill_frames = (value_count * hold_frames) as usize;
-
-        // 限制不超出总帧数
-        let write_end = (start_frame + total_fill_frames).min(total_frames);
-        let actual_fill_frames = write_end - start_frame;
-
-        if actual_fill_frames == 0 {
-            return Err("No frames available to fill");
+            let upwards = self.scan_upwards_for_numbers(layer, start_frame);
+            if upwards.is_empty() { return Err("Nothing above to mirror"); }
+            for &val in upwards.iter().rev() { src_values.push(Some(CellValue::Number(val))); }
         }
-
-        // 保存旧值用于撤销
-        let mut old_values = Vec::new();
-        let mut old_row = Vec::with_capacity(actual_fill_frames);
-        for frame in start_frame..write_end {
-            old_row.push(self.timesheet.get_cell(layer, frame).copied());
+        if src_values.is_empty() { return Ok(()); }
+        let count_to_write = (end_frame - start_frame + 1).min(src_values.len());
+        let mut changes_needed = false;
+        for i in 0..count_to_write {
+            if self.timesheet.get_cell(layer, start_frame + i) != src_values[i].as_ref() { changes_needed = true; break; }
         }
-        old_values.push(old_row);
-
-        self.undo_stack.push_back(UndoAction::SetRange {
-            min_layer: layer,
-            min_frame: start_frame,
-            old_values: Rc::new(old_values),
-        });
-        self.is_modified = true;
-
-        // 填充序列值
-        let mut write_frame = start_frame;
-        let step: i32 = if end_value >= start_value { 1 } else { -1 };
-        let mut current_value = start_value as i32;
-        let end_value_i32 = end_value as i32;
-
-        'outer: loop {
-            for _ in 0..hold_frames {
-                if write_frame >= write_end {
-                    break 'outer;
-                }
-                self.timesheet.set_cell(layer, write_frame, Some(CellValue::Number(current_value as u32)));
-                write_frame += 1;
-            }
-
-            if current_value == end_value_i32 {
-                break;
-            }
-            current_value += step;
+        if changes_needed {
+            let mut old_rows = Vec::new();
+            for i in 0..count_to_write { old_rows.push(self.timesheet.get_cell(layer, start_frame + i).copied()); }
+            self.undo_stack.push_back(UndoAction::SetRange { min_layer: layer, min_frame: start_frame, old_values: Rc::new(vec![old_rows]) });
+            self.is_modified = true;
+            for i in 0..count_to_write { self.timesheet.set_cell(layer, start_frame + i, src_values[i]); }
         }
-
         Ok(())
     }
 
-    /// Generate AE Time Remap keyframe data for entire column and copy to clipboard
-    /// version: AE keyframe version string like "6.0", "7.0", "8.0", "9.0"
-    pub fn copy_ae_keyframes(&self, ctx: &egui::Context, layer: usize, version: &str) -> Result<(), &'static str> {
-        if layer >= self.timesheet.layer_count {
-            return Err("Invalid layer");
+    fn solve_cubic_bezier_y_for_x(target_x: f64, p1: egui::Pos2, p2: egui::Pos2) -> f64 {
+        let p1x = p1.x as f64;
+        let p2x = p2.x as f64;
+        
+        let mut t = target_x;
+        for _ in 0..8 {
+            let one_minus_t = 1.0 - t;
+            let current_x = 3.0 * one_minus_t.powi(2) * t * p1x 
+                          + 3.0 * one_minus_t * t.powi(2) * p2x 
+                          + t.powi(3);
+            
+            let dx_dt = 3.0 * one_minus_t.powi(2) * p1x 
+                      + 6.0 * one_minus_t * t * (p2x - p1x) 
+                      + 3.0 * t.powi(2) * (1.0 - p2x);
+            
+            if dx_dt.abs() < 1e-6 { break; }
+            t -= (current_x - target_x) / dx_dt;
         }
+        t = t.clamp(0.0, 1.0);
 
-        let framerate = self.timesheet.framerate as f64;
-        let frame_count = self.timesheet.total_frames();
-        let mut keyframe_text = String::with_capacity(1024);
+        let p1y = p1.y as f64; 
+        let p2y = p2.y as f64; 
 
-        // AE keyframe header (use \r\n for Windows clipboard compatibility)
-        keyframe_text.push_str("Adobe After Effects ");
-        keyframe_text.push_str(version);
-        keyframe_text.push_str(" Keyframe Data\r\n\r\n");
-        keyframe_text.push_str("\tUnits Per Second\t");
-        keyframe_text.push_str(&(framerate as u32).to_string());
-        keyframe_text.push_str("\r\n\tSource Width\t1000\r\n\tSource Height\t1000\r\n");
-        keyframe_text.push_str("\tSource Pixel Aspect Ratio\t1\r\n\tComp Pixel Aspect Ratio\t1\r\n\r\n");
+        let one_minus_t = 1.0 - t;
+        
+        3.0 * one_minus_t.powi(2) * t * p1y 
+        + 3.0 * one_minus_t * t.powi(2) * p2y 
+        + t.powi(3)
+    }
 
-        // Time Remap effect
-        keyframe_text.push_str("Time Remap\r\n");
-        keyframe_text.push_str("\tFrame\tseconds\t\r\n");
+    pub fn set_keyframe_curve(&mut self, layer: usize, frame_start: usize, p1: egui::Pos2, p2: egui::Pos2, start_val: u32, num_drawings: u32, duration: u32) {
+        
+        let total_frames = duration as usize;
+        if total_frames < 1 { return; }
 
-        // Collect keyframes (only when value changes)
-        let mut prev_value: Option<u32> = None;
+        let mut old_rows = Vec::new();
+        for i in 0..total_frames {
+            old_rows.push(self.timesheet.get_cell(layer, frame_start + i).copied());
+        }
+        self.undo_stack.push_back(UndoAction::SetRange { 
+            min_layer: layer, 
+            min_frame: frame_start, 
+            old_values: Rc::new(vec![old_rows]) 
+        });
+        self.is_modified = true;
 
-        for frame in 0..frame_count {
-            let current_value = self.timesheet.get_actual_value(layer, frame);
+        let mut prev_written_val: Option<u32> = None;
 
-            // Output keyframe when value changes
-            if current_value != prev_value {
-                // Frame number in timeline
-                keyframe_text.push('\t');
-                keyframe_text.push_str(&frame.to_string());
-                keyframe_text.push('\t');
+        for i in 0..total_frames {
+            let progress_x = if total_frames > 1 {
+                i as f64 / (total_frames - 1) as f64
+            } else { 
+                1.0 
+            };
 
-                if let Some(value) = current_value {
-                    // Time Remap value: convert cell value to seconds
-                    // Cell value 1 = frame 0 in source = 0 seconds
-                    let time_seconds = (value.saturating_sub(1)) as f64 / framerate;
-                    // Format with 7 decimal places (AE uses 7)
-                    if time_seconds == 0.0 {
-                        keyframe_text.push_str("0");
-                    } else {
-                        // Remove trailing zeros from formatted number
-                        let formatted = format!("{:.7}", time_seconds);
-                        let trimmed = formatted.trim_end_matches('0').trim_end_matches('.');
-                        keyframe_text.push_str(trimmed);
-                    }
-                } else {
-                    // Empty cell - output 0
-                    keyframe_text.push_str("0");
-                }
-                keyframe_text.push_str("\t\r\n");
-                prev_value = current_value;
+            let progress_y = Self::solve_cubic_bezier_y_for_x(progress_x, p1, p2);
+            
+            let drawing_offset = (progress_y * (num_drawings.max(1) - 1) as f64).round() as u32;
+            let final_val = start_val + drawing_offset;
+
+            let should_write_number = if i == 0 {
+                true 
+            } else {
+                Some(final_val) != prev_written_val
+            };
+
+            if should_write_number {
+                self.timesheet.set_cell(layer, frame_start + i, Some(CellValue::Number(final_val)));
+                prev_written_val = Some(final_val);
+            } else {
+                self.timesheet.set_cell(layer, frame_start + i, Some(CellValue::Same));
             }
         }
-
-        keyframe_text.push_str("\r\nEnd of Keyframe Data\r\n");
-
-        // Copy to system clipboard
-        ctx.output_mut(|o| o.copied_text = keyframe_text);
-
-        Ok(())
     }
 }

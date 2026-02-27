@@ -2,15 +2,15 @@ use std::fs;
 use std::path::Path;
 
 fn main() {
-    // Generate build date and number
+    // Generate build date and number (完美保留原有的版本追踪逻辑)
     generate_build_info();
 
     #[cfg(windows)]
     {
-        // Only add icon if the file exists
-        if std::path::Path::new("icon.ico").exists() {
+        //  assets 文件夹里找你的专属
+        if std::path::Path::new("assets/exe_icon.ico").exists() {
             let mut res = winres::WindowsResource::new();
-            res.set_icon("icon.ico");
+            res.set_icon("assets/exe_icon.ico");
             res.compile().expect("Failed to compile Windows resources");
         }
     }

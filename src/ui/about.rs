@@ -33,20 +33,36 @@ impl AboutDialog {
         egui::Window::new("About STS")
             .collapsible(false)
             .resizable(false)
-            .anchor(egui::Align2::LEFT_CENTER, [0.0, 0.0])
+            // 弹窗依然在屏幕正中间
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.heading("STS 3.0");
-                    ui.add_space(10.0);
+                    
+                    // 👇 1. 加载顶部的 Miona 长方形 Banner 👇
+                    // 注意：相对路径是从 src/ui/about.rs 指向根目录的 miona_banner.png
+                    ui.add(
+                        egui::Image::new(egui::include_image!("../../assets/miona_banner.png"))
+                            .max_width(320.0) // 限制图片最大宽度，适配弹窗大小
+                            .rounding(6.0),   // 给图片加上精致的圆角
+                    );
+                    
+                    ui.add_space(15.0);
+
+                    // 👇 2. 软件名称与版本 👇
+                    ui.heading("STS 3.0 (MionaRira Edition)");
+                    ui.add_space(5.0);
                     ui.label(format!("Version: {}", env!("CARGO_PKG_VERSION")));
-                    ui.add_space(5.0);
-                    ui.label(format!("Build: {}", env!("BUILD_INFO")));
-                    ui.add_space(5.0);
+                    ui.add_space(8.0);
+                    
                     ui.label("Animation Timesheet Editor");
-                    ui.add_space(10.0);
-                    ui.label("Written by Ma Chenxing © 2025");
-                    ui.add_space(5.0);
+                    ui.add_space(15.0);
+                    
+                    // 👇 3. 极其规范的开源双署名 👇
+                    ui.label("Original Core Written by Ma Chenxing © 2025");
+                    ui.label("New Features by 银河猫抓板");
+                    
+                    ui.add_space(15.0);
                 });
 
                 let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
