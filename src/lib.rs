@@ -1,5 +1,8 @@
 pub mod models;
 pub mod formats;
+// 在文件头部添加：
+pub mod i18n;
+pub mod theme;
 
 /// Shared constants for resource limits
 pub mod limits {

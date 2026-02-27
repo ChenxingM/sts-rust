@@ -1,41 +1,29 @@
 #![windows_subsystem = "windows"]
-#![allow(dead_code)] // Allow unused helper functions for future use
+#![allow(dead_code)] 
 
 mod document;
 mod app;
 mod ui;
 pub mod settings;
+mod i18n;
+mod theme; 
+mod video_utils;
 
-use app::StsApp;
-
+// ... 下面的 font 设置和 main 函数保持不变 ...
 fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-
-    // 根据平台选择中文字体路径
-    #[cfg(target_os = "windows")]
-    let font_paths: &[&str] = &[
+    
+    // 尝试加载 Windows 系统中文字体
+    // 💡小提示：如果您想完美支持日文显示，可以在这里顺便加一个日文字体路径
+    // 比如 "C:\\Windows\\Fonts\\msgothic.ttc"
+    let font_paths = [
         "C:\\Windows\\Fonts\\msyh.ttc",      // Microsoft YaHei
         "C:\\Windows\\Fonts\\simhei.ttf",    // SimHei
         "C:\\Windows\\Fonts\\simsun.ttc",    // SimSun
     ];
 
-    #[cfg(target_os = "macos")]
-    let font_paths: &[&str] = &[
-        "/System/Library/Fonts/PingFang.ttc",           // PingFang SC (苹方)
-        "/System/Library/Fonts/STHeiti Light.ttc",      // Heiti SC (黑体)
-        "/System/Library/Fonts/STHeiti Medium.ttc",     // Heiti SC Medium
-        "/Library/Fonts/Arial Unicode.ttf",             // Arial Unicode
-    ];
-
-    #[cfg(target_os = "linux")]
-    let font_paths: &[&str] = &[
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-    ];
-
     let mut font_loaded = false;
-    for font_path in font_paths {
+    for font_path in &font_paths {
         if let Ok(font_data) = std::fs::read(font_path) {
             fonts.font_data.insert(
                 "chinese".to_owned(),
@@ -47,7 +35,6 @@ fn setup_fonts(ctx: &egui::Context) {
     }
 
     if font_loaded {
-        // 将中文字体添加到所有字体族中（在默认字体之后）
         fonts.families
             .entry(egui::FontFamily::Proportional)
             .or_default()
@@ -63,7 +50,7 @@ fn setup_fonts(ctx: &egui::Context) {
 }
 
 fn load_icon() -> Option<egui::IconData> {
-    let icon_bytes = include_bytes!("../icon.ico");
+    let icon_bytes = include_bytes!("../assets/window_icon.ico");
     let icon_image = image::load_from_memory(icon_bytes).ok()?.into_rgba8();
     let (width, height) = icon_image.dimensions();
     Some(egui::IconData {
@@ -75,8 +62,8 @@ fn load_icon() -> Option<egui::IconData> {
 
 fn main() -> Result<(), eframe::Error> {
     let mut viewport = egui::ViewportBuilder::default()
-        .with_inner_size([1200.0, 800.0])
-        .with_title("STS 3.0");
+        .with_inner_size([1280.0, 720.0])
+        .with_title("STS 3.0 - MionaRira Edition");
 
     if let Some(icon) = load_icon() {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
@@ -88,11 +75,13 @@ fn main() -> Result<(), eframe::Error> {
     };
 
     eframe::run_native(
-        "STS 3.0",
+        "STS 3.0 - MionaRira Edition",
         options,
         Box::new(|cc| {
             setup_fonts(&cc.egui_ctx);
-            Ok(Box::new(StsApp::default()))
+            // 注册图片加载器，允许播放器读取本地序列帧
+            egui_extras::install_image_loaders(&cc.egui_ctx);
+            Ok(Box::new(crate::app::StsApp::default()))
         }),
     )
 }
