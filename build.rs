@@ -11,6 +11,14 @@ fn main() {
         if std::path::Path::new("assets/exe_icon.ico").exists() {
             let mut res = winres::WindowsResource::new();
             res.set_icon("assets/exe_icon.ico");
+            // 核心属性修改区：这里就是鼠标悬停时会显示的信息！
+            res.set("FileDescription", "STS MionaRira Edition - Pipeline Tool"); // 文件说明
+            res.set("ProductName", "STS MionaRira Edition");                     // 产品名称
+            res.set("OriginalFilename", "STS_MionaRira.exe");                    // 原始文件名
+            res.set("LegalCopyright", "Copyright (c) 2026 MionaRira Pipeline");  // 版权信息
+            
+            // 执行嵌入
+            res.compile().unwrap();
             res.compile().expect("Failed to compile Windows resources");
         }
     }

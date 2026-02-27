@@ -60,7 +60,7 @@ impl AboutDialog {
                     
                     // 👇 3. 极其规范的开源双署名 👇
                     ui.label("Original Core Written by Ma Chenxing © 2025");
-                    ui.label("New Features by 银河猫抓板");
+                    ui.label("New Features by 银河猫抓板 © 2026");
                     
                     ui.add_space(15.0);
                 });
